@@ -49,17 +49,17 @@ type decoder struct {
 	colorModel       color.Model
 }
 
-// A FormatError reports that the input is not a valid PCX.
-type FormatError string
+// A ErrFormat reports that the input is not a valid PCX.
+type ErrFormat string
 
-func (e FormatError) Error() string {
+func (e ErrFormat) Error() string {
 	return "pcx: invalid format: " + string(e)
 }
 
-// An UnsupportedError reports that the variant of the PCX file is not supported.
-type UnsupportedError string
+// An ErrUnsupported reports that the variant of the PCX file is not supported.
+type ErrUnsupported string
 
-func (e UnsupportedError) Error() string {
+func (e ErrUnsupported) Error() string {
 	return "pcx: unsupported variant: " + string(e)
 }
 
@@ -105,7 +105,11 @@ func Decode(r io.Reader) (image.Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	return d.decode()
+	img, err := d.decode()
+	if err != nil {
+		return nil, err
+	}
+	return img, nil
 }
 
 // DecodeConfig returns the color model and dimensions of a PCX image
@@ -144,14 +148,14 @@ func (d *decoder) readHeader() error {
 	}
 
 	if buf[0] != magic {
-		return FormatError("not a PCX file")
+		return ErrFormat("not a PCX file")
 	}
 
 	d.version = int(buf[1])
 	d.rle = buf[2] == 1
 	d.bpp = int(buf[3])
 	if d.bpp < 1 || d.bpp > 8 {
-		return FormatError(fmt.Sprintf("unsupported bpp (%d)", d.bpp))
+		return ErrFormat(fmt.Sprintf("unsupported bpp (%d)", d.bpp))
 	}
 	var dim [4]int
 	for i := 0; i < 4; i++ {
@@ -174,7 +178,7 @@ func (d *decoder) readHeader() error {
 	d.vertSize = int(buf[72]) | (int(buf[73]) << 8)
 
 	if d.bytesPerScanline < (d.bounds.Dx()*d.bpp*d.nplanes+7)/8 {
-		return FormatError("corrupt image")
+		return ErrFormat("corrupt image")
 	}
 
 	if d.grayscale {
@@ -188,7 +192,7 @@ func (d *decoder) readHeader() error {
 
 func (d *decoder) decode() (image.Image, error) {
 	if !d.rle {
-		return nil, UnsupportedError("non-RLE")
+		return nil, ErrUnsupported("non-RLE")
 	}
 
 	switch {
@@ -196,7 +200,7 @@ func (d *decoder) decode() (image.Image, error) {
 		if d.bpp == 8 {
 			return d.decodeGrayscale()
 		}
-		return nil, UnsupportedError("grayscale only supported with 8bpp")
+		return nil, ErrUnsupported("grayscale only supported with 8bpp")
 	case d.nplanes == 1:
 		if d.bpp == 8 {
 			return d.decodeRGBPaletted()
@@ -208,7 +212,7 @@ func (d *decoder) decode() (image.Image, error) {
 		return d.decodePlanar()
 	}
 
-	return nil, UnsupportedError(fmt.Sprintf("version %d with %d planes %d bpp", d.version, d.nplanes, d.bpp))
+	return nil, ErrUnsupported(fmt.Sprintf("version %d with %d planes %d bpp", d.version, d.nplanes, d.bpp))
 }
 
 func (d *decoder) decodeGrayscale() (image.Image, error) {
