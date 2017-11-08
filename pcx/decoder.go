@@ -83,14 +83,14 @@ var cga16ColorPalette = [16]color.Color{
 }
 
 var cga4ColorPalettes = [8][]color.Color{
-	[]color.Color{cga16ColorPalette[2], cga16ColorPalette[4], cga16ColorPalette[6]},    // green, red, brown
-	[]color.Color{cga16ColorPalette[10], cga16ColorPalette[12], cga16ColorPalette[14]}, // light green, light red, yellow
-	[]color.Color{cga16ColorPalette[3], cga16ColorPalette[5], cga16ColorPalette[7]},    // cyan, magenta, light gray
-	[]color.Color{cga16ColorPalette[11], cga16ColorPalette[13], cga16ColorPalette[15]}, // light cyan, light magenta, white
-	[]color.Color{cga16ColorPalette[3], cga16ColorPalette[4], cga16ColorPalette[7]},    // cyan, red, light gray
-	[]color.Color{cga16ColorPalette[11], cga16ColorPalette[12], cga16ColorPalette[15]}, // light cyan, light red, white
-	[]color.Color{cga16ColorPalette[3], cga16ColorPalette[4], cga16ColorPalette[7]},    // cyan, red, light gray
-	[]color.Color{cga16ColorPalette[11], cga16ColorPalette[12], cga16ColorPalette[15]}, // light cyan, light red, white
+	{cga16ColorPalette[2], cga16ColorPalette[4], cga16ColorPalette[6]},    // green, red, brown
+	{cga16ColorPalette[10], cga16ColorPalette[12], cga16ColorPalette[14]}, // light green, light red, yellow
+	{cga16ColorPalette[3], cga16ColorPalette[5], cga16ColorPalette[7]},    // cyan, magenta, light gray
+	{cga16ColorPalette[11], cga16ColorPalette[13], cga16ColorPalette[15]}, // light cyan, light magenta, white
+	{cga16ColorPalette[3], cga16ColorPalette[4], cga16ColorPalette[7]},    // cyan, red, light gray
+	{cga16ColorPalette[11], cga16ColorPalette[12], cga16ColorPalette[15]}, // light cyan, light red, white
+	{cga16ColorPalette[3], cga16ColorPalette[4], cga16ColorPalette[7]},    // cyan, red, light gray
+	{cga16ColorPalette[11], cga16ColorPalette[12], cga16ColorPalette[15]}, // light cyan, light red, white
 }
 
 func init() {
