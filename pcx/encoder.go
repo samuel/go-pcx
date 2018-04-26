@@ -6,6 +6,7 @@ import (
 	"io"
 )
 
+// Encode writes the Image m to w in PCX format.
 func Encode(w io.Writer, m image.Image) error {
 	switch im := m.(type) {
 	case *image.RGBA:

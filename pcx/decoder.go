@@ -49,17 +49,17 @@ type decoder struct {
 	colorModel       color.Model
 }
 
-// A ErrFormat reports that the input is not a valid PCX.
-type ErrFormat string
+// A FormatError reports that the input is not a valid PCX.
+type FormatError string
 
-func (e ErrFormat) Error() string {
+func (e FormatError) Error() string {
 	return "pcx: invalid format: " + string(e)
 }
 
-// An ErrUnsupported reports that the variant of the PCX file is not supported.
-type ErrUnsupported string
+// An UnsupportedError reports that the input uses a valid but unimplemented PCX feature.
+type UnsupportedError string
 
-func (e ErrUnsupported) Error() string {
+func (e UnsupportedError) Error() string {
 	return "pcx: unsupported variant: " + string(e)
 }
 
@@ -148,14 +148,14 @@ func (d *decoder) readHeader() error {
 	}
 
 	if buf[0] != magic {
-		return ErrFormat("not a PCX file")
+		return FormatError("not a PCX file")
 	}
 
 	d.version = int(buf[1])
 	d.rle = buf[2] == 1
 	d.bpp = int(buf[3])
 	if d.bpp < 1 || d.bpp > 8 {
-		return ErrFormat(fmt.Sprintf("unsupported bpp (%d)", d.bpp))
+		return FormatError(fmt.Sprintf("unsupported bpp (%d)", d.bpp))
 	}
 	var dim [4]int
 	for i := 0; i < 4; i++ {
@@ -178,7 +178,7 @@ func (d *decoder) readHeader() error {
 	d.vertSize = int(buf[72]) | (int(buf[73]) << 8)
 
 	if d.bytesPerScanline < (d.bounds.Dx()*d.bpp*d.nplanes+7)/8 {
-		return ErrFormat("corrupt image")
+		return FormatError("corrupt image")
 	}
 
 	if d.grayscale {
@@ -192,7 +192,7 @@ func (d *decoder) readHeader() error {
 
 func (d *decoder) decode() (image.Image, error) {
 	if !d.rle {
-		return nil, ErrUnsupported("non-RLE")
+		return nil, UnsupportedError("non-RLE")
 	}
 
 	switch {
@@ -200,7 +200,7 @@ func (d *decoder) decode() (image.Image, error) {
 		if d.bpp == 8 {
 			return d.decodeGrayscale()
 		}
-		return nil, ErrUnsupported("grayscale only supported with 8bpp")
+		return nil, UnsupportedError("grayscale only supported with 8bpp")
 	case d.nplanes == 1:
 		if d.bpp == 8 {
 			return d.decodeRGBPaletted()
@@ -212,7 +212,7 @@ func (d *decoder) decode() (image.Image, error) {
 		return d.decodePlanar()
 	}
 
-	return nil, ErrUnsupported(fmt.Sprintf("version %d with %d planes %d bpp", d.version, d.nplanes, d.bpp))
+	return nil, UnsupportedError(fmt.Sprintf("version %d with %d planes %d bpp", d.version, d.nplanes, d.bpp))
 }
 
 func (d *decoder) decodeGrayscale() (image.Image, error) {
