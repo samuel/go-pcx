@@ -1,6 +1,7 @@
 // Package pcx implements a PCX image decoder and encoder.
 //
 // Specification: http://web.archive.org/web/20030111010058/http://www.nist.fss.ru/hr/doc/spec/pcx.htm
+// Updated description: https://moddingwiki.shikadi.net/wiki/PCX_Format
 //
 // Sample files: http://samples.ffmpeg.org/image-samples/pcx/
 package pcx
@@ -36,10 +37,10 @@ type decoder struct {
 	rle              bool
 	bpp              int
 	bounds           image.Rectangle
-	horizDpi         int
-	vertDpi          int
-	horizSize        int
-	vertSize         int
+	horizDPI         int
+	vertDPI          int
+	horizScreenSize  int
+	vertScreenSize   int
 	colormap         [48]byte
 	nplanes          int
 	bytesPerLine     int
@@ -126,6 +127,10 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 	}, nil
 }
 
+// newDecoder initializes a new decoder and reads the PCX
+// header from the provided reader. It will return an error
+// if the header is invalid, but it does not validate the
+// image further.
 func newDecoder(r io.Reader) (*decoder, error) {
 	d := &decoder{
 		r: r,
@@ -166,16 +171,22 @@ func (d *decoder) readHeader() error {
 		int(buf[6])|(int(buf[7])<<8),
 		int(buf[8])|(int(buf[9])<<8)+1,
 		int(buf[10])|(int(buf[11])<<8)+1)
-	d.horizDpi = int(buf[12]) | (int(buf[13]) << 8)
-	d.vertDpi = int(buf[14]) | (int(buf[15]) << 8)
+	d.horizDPI = int(buf[12]) | (int(buf[13]) << 8)
+	d.vertDPI = int(buf[14]) | (int(buf[15]) << 8)
 	copy(d.colormap[:48], buf[16:16+48])
+	// Byte 64 is reserved and should be est to 0
 	d.nplanes = int(buf[65])
+	// The number of bytes per line MUST be an even number.
 	d.bytesPerLine = int(buf[66]) | (int(buf[67]) << 8)
 	d.bytesPerScanline = d.bytesPerLine * d.nplanes
-	d.grayscale = buf[68] == 2
+	// grayscale is generally ignored entirely. It may just be for display and doesn't change the encoding.
+	// I have yet to see a file in the wild that has this set to grayscale.
+	d.grayscale = d.version < 4 && buf[68] == 2 // Grayscale flag ignored by PB IV/ IV +
 	d.pb4 = buf[68] != 0
-	d.horizSize = int(buf[70]) | (int(buf[71]) << 8)
-	d.vertSize = int(buf[72]) | (int(buf[73]) << 8)
+	// horizontal and vertical screen size in pixels are found only in PB IV/IV Plus
+	d.horizScreenSize = int(buf[70]) | (int(buf[71]) << 8)
+	d.vertScreenSize = int(buf[72]) | (int(buf[73]) << 8)
+	// The rest of the 54 bytes should be all set to 0
 
 	if d.bytesPerScanline < (d.bounds.Dx()*d.bpp*d.nplanes+7)/8 {
 		return FormatError("corrupt image")
@@ -187,6 +198,10 @@ func (d *decoder) readHeader() error {
 		d.colorModel = color.RGBAModel
 	}
 
+	if d.bounds.Dx() <= 0 || d.bounds.Dy() <= 0 {
+		return FormatError(fmt.Sprintf("invalid image dimensions %d x %d", d.bounds.Dx(), d.bounds.Dy()))
+	}
+
 	return nil
 }
 
@@ -195,28 +210,29 @@ func (d *decoder) decode() (image.Image, error) {
 		return nil, UnsupportedError("non-RLE")
 	}
 
+	bufR := bufio.NewReader(d.r)
+
 	switch {
 	case d.colorModel == color.GrayModel:
 		if d.bpp == 8 {
-			return d.decodeGrayscale()
+			return d.decodeGrayscale(bufR)
 		}
 		return nil, UnsupportedError("grayscale only supported with 8bpp")
 	case d.nplanes == 1:
 		if d.bpp == 8 {
-			return d.decodeRGBPaletted()
+			return d.decodeRGBPaletted(bufR)
 		}
-		return d.decodePaletted()
+		return d.decodePaletted(bufR)
 	case d.bpp == 8 && (d.nplanes == 3 || d.nplanes == 4):
-		return d.decodeRGB()
+		return d.decodeRGB(bufR)
 	case d.bpp == 1 && (d.nplanes >= 2 && d.nplanes <= 4):
-		return d.decodePlanar()
+		return d.decodePlanar(bufR)
 	}
 
 	return nil, UnsupportedError(fmt.Sprintf("version %d with %d planes %d bpp", d.version, d.nplanes, d.bpp))
 }
 
-func (d *decoder) decodeGrayscale() (image.Image, error) {
-	bufR := bufio.NewReader(d.r)
+func (d *decoder) decodeGrayscale(bufR *bufio.Reader) (image.Image, error) {
 	img := image.NewGray(d.bounds)
 	height := d.bounds.Dy()
 	for y := 0; y < height; y++ {
@@ -227,9 +243,7 @@ func (d *decoder) decodeGrayscale() (image.Image, error) {
 	return img, nil
 }
 
-func (d *decoder) decodeRGB() (image.Image, error) {
-	bufR := bufio.NewReader(d.r)
-
+func (d *decoder) decodeRGB(bufR *bufio.Reader) (image.Image, error) {
 	img := image.NewRGBA(d.bounds)
 	width := d.bounds.Dx()
 	height := d.bounds.Dy()
@@ -254,9 +268,7 @@ func (d *decoder) decodeRGB() (image.Image, error) {
 	return img, nil
 }
 
-func (d *decoder) decodeRGBPaletted() (image.Image, error) {
-	bufR := bufio.NewReader(d.r)
-
+func (d *decoder) decodeRGBPaletted(bufR *bufio.Reader) (image.Image, error) {
 	pal := make([]color.Color, 256)
 	img := image.NewPaletted(d.bounds, pal)
 	height := d.bounds.Dy()
@@ -284,9 +296,7 @@ func (d *decoder) decodeRGBPaletted() (image.Image, error) {
 	return img, nil
 }
 
-func (d *decoder) decodePaletted() (image.Image, error) {
-	bufR := bufio.NewReader(d.r)
-
+func (d *decoder) decodePaletted(bufR *bufio.Reader) (image.Image, error) {
 	pal := make([]color.Color, 1<<uint(d.bpp))
 	switch {
 	case d.bpp == 1: // B&W
@@ -310,6 +320,9 @@ func (d *decoder) decodePaletted() (image.Image, error) {
 		}
 		copy(pal[1:], cga4ColorPalettes[idx])
 	default: // EGA
+		if len(pal)*3 > len(d.colormap) {
+			return nil, fmt.Errorf("palette larger (%d) than available colormap (%d)", len(pal)*3, len(d.colormap))
+		}
 		for i := 0; i < len(pal)*3; i += 3 {
 			pal[i/3] = color.RGBA{R: d.colormap[i], G: d.colormap[i+1], B: d.colormap[i+2], A: 255}
 		}
@@ -338,14 +351,13 @@ func (d *decoder) decodePaletted() (image.Image, error) {
 	return img, nil
 }
 
-func (d *decoder) decodePlanar() (image.Image, error) {
+func (d *decoder) decodePlanar(bufR *bufio.Reader) (image.Image, error) {
 	pal := make([]color.Color, 1<<uint(d.nplanes))
 	for i := 0; i < len(pal)*3; i += 3 {
 		pal[i/3] = color.RGBA{R: d.colormap[i], G: d.colormap[i+1], B: d.colormap[i+2], A: 255}
 	}
 	img := image.NewPaletted(d.bounds, pal)
 
-	bufR := bufio.NewReader(d.r)
 	width := d.bounds.Dx()
 	height := d.bounds.Dy()
 	buf := make([]byte, d.bytesPerScanline)
