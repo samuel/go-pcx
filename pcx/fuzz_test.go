@@ -11,12 +11,12 @@ import (
 func FuzzDecodeEncode(f *testing.F) {
 	testImages, err := filepath.Glob("testdata/*.pcx")
 	if err != nil {
-		f.Fatal(err)
+		f.Fatalf("Failed to list test files: %s", err)
 	}
 	for _, path := range testImages {
 		b, err := os.ReadFile(path)
 		if err != nil {
-			f.Fatal(err)
+			f.Fatalf("Failed to decode %s: %s", path, err)
 		}
 		f.Add(b)
 	}

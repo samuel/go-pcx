@@ -19,8 +19,7 @@ import (
 // 0 = Version 2.5 of PC Paintbrush
 // 2 = Version 2.8 w/palette information
 // 3 = Version 2.8 w/o palette information
-// 4 = PC Paintbrush for Windows(Plus for
-//    Windows uses Ver 5)
+// 4 = PC Paintbrush for Windows(Plus for Windows uses Ver 5)
 // 5 = Version 3.0 and > of PC Paintbrush
 //    and PC Paintbrush +, includes
 //    Publisher's Paintbrush . Includes
@@ -50,6 +49,15 @@ type decoder struct {
 	colorModel       color.Model
 }
 
+type Image struct {
+	image.Image
+
+	Version                         int
+	Paintbrush4                     bool
+	HorizDPI, VertDPI               int
+	HorizScreenSize, VertScreenSize int
+}
+
 // A FormatError reports that the input is not a valid PCX.
 type FormatError string
 
@@ -64,43 +72,15 @@ func (e UnsupportedError) Error() string {
 	return "pcx: unsupported variant: " + string(e)
 }
 
-var cga16ColorPalette = [16]color.Color{
-	color.RGBA{0x00, 0x00, 0x00, 0xff}, //  0 black
-	color.RGBA{0x00, 0x00, 0xaa, 0xff}, //  1 blue
-	color.RGBA{0x00, 0xaa, 0x00, 0xff}, //  2 green
-	color.RGBA{0x00, 0xaa, 0xaa, 0xff}, //  3 cyan
-	color.RGBA{0xaa, 0x00, 0x00, 0xff}, //  4 red
-	color.RGBA{0xaa, 0x00, 0xaa, 0xff}, //  5 magenta
-	color.RGBA{0xaa, 0x55, 0x00, 0xff}, //  6 brown
-	color.RGBA{0xaa, 0xaa, 0xaa, 0xff}, //  7 light gray
-	color.RGBA{0x55, 0x55, 0x55, 0xff}, //  8 gray
-	color.RGBA{0x55, 0x55, 0xff, 0xff}, //  9 light blue
-	color.RGBA{0x55, 0xff, 0x55, 0xff}, // 10 light green
-	color.RGBA{0x55, 0xff, 0xff, 0xff}, // 11 light cyan
-	color.RGBA{0xff, 0x55, 0x55, 0xff}, // 12 light red
-	color.RGBA{0xff, 0x55, 0xff, 0xff}, // 13 light magenta
-	color.RGBA{0xff, 0xff, 0x55, 0xff}, // 14 yellow
-	color.RGBA{0xff, 0xff, 0xff, 0xff}, // 15 white
-}
-
-var cga4ColorPalettes = [8][]color.Color{
-	{cga16ColorPalette[2], cga16ColorPalette[4], cga16ColorPalette[6]},    // green, red, brown
-	{cga16ColorPalette[10], cga16ColorPalette[12], cga16ColorPalette[14]}, // light green, light red, yellow
-	{cga16ColorPalette[3], cga16ColorPalette[5], cga16ColorPalette[7]},    // cyan, magenta, light gray
-	{cga16ColorPalette[11], cga16ColorPalette[13], cga16ColorPalette[15]}, // light cyan, light magenta, white
-	{cga16ColorPalette[3], cga16ColorPalette[4], cga16ColorPalette[7]},    // cyan, red, light gray
-	{cga16ColorPalette[11], cga16ColorPalette[12], cga16ColorPalette[15]}, // light cyan, light red, white
-	{cga16ColorPalette[3], cga16ColorPalette[4], cga16ColorPalette[7]},    // cyan, red, light gray
-	{cga16ColorPalette[11], cga16ColorPalette[12], cga16ColorPalette[15]}, // light cyan, light red, white
-}
-
 func init() {
 	// The magic also matches the RLE bit to make sure it's set
 	image.RegisterFormat("pcx", "\x0a?\x01", Decode, DecodeConfig)
 }
 
 // Decode reads a PCX image from r and returns it as an image.Image.
-// The type of Image returned depends on the PCX contents.
+// The type of Image returned depends on the PCX contents. The possible
+// image types are returned are defined in the stdlib image package. Use
+// DecodeExtended to preserve more information such as DPI.
 func Decode(r io.Reader) (image.Image, error) {
 	d, err := newDecoder(r)
 	if err != nil {
@@ -127,6 +107,28 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 	}, nil
 }
 
+// DecodeExtended is similar to Decode except that the returned image is an
+// internal representation that maintains more metadata such as DPI.
+func DecodeExtended(r io.Reader) (*Image, error) {
+	d, err := newDecoder(r)
+	if err != nil {
+		return nil, err
+	}
+	img, err := d.decode()
+	if err != nil {
+		return nil, err
+	}
+	return &Image{
+		Image:           img,
+		Version:         d.version,
+		Paintbrush4:     d.pb4,
+		HorizDPI:        d.horizDPI,
+		VertDPI:         d.vertDPI,
+		HorizScreenSize: d.horizScreenSize,
+		VertScreenSize:  d.vertScreenSize,
+	}, nil
+}
+
 // newDecoder initializes a new decoder and reads the PCX
 // header from the provided reader. It will return an error
 // if the header is invalid, but it does not validate the
@@ -136,7 +138,7 @@ func newDecoder(r io.Reader) (*decoder, error) {
 		r: r,
 	}
 	if err := d.readHeader(); err != nil {
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			err = io.ErrUnexpectedEOF
 		}
 		return nil, err
@@ -162,10 +164,6 @@ func (d *decoder) readHeader() error {
 	if d.bpp < 1 || d.bpp > 8 {
 		return FormatError(fmt.Sprintf("unsupported bpp (%d)", d.bpp))
 	}
-	var dim [4]int
-	for i := 0; i < 4; i++ {
-		dim[i] = int(buf[4+i*2]) | (int(buf[5+i*2]) << 8)
-	}
 	d.bounds = image.Rect(
 		int(buf[4])|(int(buf[5])<<8),
 		int(buf[6])|(int(buf[7])<<8),
@@ -174,14 +172,14 @@ func (d *decoder) readHeader() error {
 	d.horizDPI = int(buf[12]) | (int(buf[13]) << 8)
 	d.vertDPI = int(buf[14]) | (int(buf[15]) << 8)
 	copy(d.colormap[:48], buf[16:16+48])
-	// Byte 64 is reserved and should be est to 0
+	// Byte 64 is reserved and should be set to 0
 	d.nplanes = int(buf[65])
 	// The number of bytes per line MUST be an even number.
 	d.bytesPerLine = int(buf[66]) | (int(buf[67]) << 8)
 	d.bytesPerScanline = d.bytesPerLine * d.nplanes
 	// grayscale is generally ignored entirely. It may just be for display and doesn't change the encoding.
 	// I have yet to see a file in the wild that has this set to grayscale.
-	d.grayscale = d.version < 4 && buf[68] == 2 // Grayscale flag ignored by PB IV/ IV +
+	d.grayscale = d.version < 5 && buf[68] == 2 // Grayscale flag ignored by PB IV/ IV +
 	d.pb4 = buf[68] != 0
 	// horizontal and vertical screen size in pixels are found only in PB IV/IV Plus
 	d.horizScreenSize = int(buf[70]) | (int(buf[71]) << 8)
@@ -235,8 +233,8 @@ func (d *decoder) decode() (image.Image, error) {
 func (d *decoder) decodeGrayscale(bufR *bufio.Reader) (image.Image, error) {
 	img := image.NewGray(d.bounds)
 	height := d.bounds.Dy()
-	for y := 0; y < height; y++ {
-		if err := d.rleDecode(bufR, img.Pix[y*img.Stride:]); err != nil {
+	for y := range height {
+		if err := rleDecode(bufR, img.Pix[y*img.Stride:], d.bytesPerScanline); err != nil {
 			return img, err
 		}
 	}
@@ -249,11 +247,11 @@ func (d *decoder) decodeRGB(bufR *bufio.Reader) (image.Image, error) {
 	height := d.bounds.Dy()
 	offset := 0
 	buf := make([]byte, d.bytesPerScanline)
-	for y := 0; y < height; y++ {
-		if err := d.rleDecode(bufR, buf); err != nil {
+	for range height {
+		if err := rleDecode(bufR, buf, d.bytesPerScanline); err != nil {
 			return img, err
 		}
-		for x := 0; x < width; x++ {
+		for x := range width {
 			img.Pix[offset] = buf[x]
 			img.Pix[offset+1] = buf[x+d.bytesPerLine]
 			img.Pix[offset+2] = buf[x+2*d.bytesPerLine]
@@ -272,8 +270,8 @@ func (d *decoder) decodeRGBPaletted(bufR *bufio.Reader) (image.Image, error) {
 	pal := make([]color.Color, 256)
 	img := image.NewPaletted(d.bounds, pal)
 	height := d.bounds.Dy()
-	for y := 0; y < height; y++ {
-		if err := d.rleDecode(bufR, img.Pix[y*img.Stride:]); err != nil {
+	for y := range height {
+		if err := rleDecode(bufR, img.Pix[y*img.Stride:], d.bytesPerScanline); err != nil {
 			return img, err
 		}
 	}
@@ -289,7 +287,7 @@ func (d *decoder) decodeRGBPaletted(bufR *bufio.Reader) (image.Image, error) {
 	if _, err := io.ReadFull(bufR, palBytes); err != nil {
 		return img, err
 	}
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		pal[i] = color.RGBA{R: palBytes[i*3], G: palBytes[i*3+1], B: palBytes[i*3+2], A: 255}
 	}
 
@@ -306,16 +304,29 @@ func (d *decoder) decodePaletted(bufR *bufio.Reader) (image.Image, error) {
 		pal[0] = cga16ColorPalette[d.colormap[0]>>4]
 		idx := int(d.colormap[3] >> 5)
 		if d.pb4 {
-			// PC Paintbush 4.0 encodes the CGA palettes differently than 3.0.
-			// Very thankful for the person that figured it out here:
-			// https://github.com/wjaguar/mtPaint/blob/master/src/png.c
-			i := 0
-			if d.colormap[5] >= d.colormap[4] {
-				i = 1
+			isReallyPB4 := true
+			for _, v := range d.colormap[:12] {
+				if v != 0 && v != 255 {
+					isReallyPB4 = false
+					break
+				}
 			}
-			idx = i * 2
-			if d.colormap[4+i] > 200 {
-				idx++
+			if isReallyPB4 {
+				// PC Paintbush 4.0 encodes the CGA palettes differently than 3.0.
+				// Very thankful for the person that figured it out here:
+				// https://github.com/wjaguar/mtPaint/blob/master/src/png.c
+				// Also described in https://moddingwiki.shikadi.net/wiki/PCX_Format#Newer_method
+				// G = colormap[4]
+				// B = colormap[5]
+				// Pick green palette if G>B in slot 1
+				// Pick bright palette if max(G,B) > 200
+				idx = 0
+				if d.colormap[5] >= d.colormap[4] {
+					idx |= 2
+				}
+				if max(d.colormap[5], d.colormap[4]) > 200 {
+					idx |= 1
+				}
 			}
 		}
 		copy(pal[1:], cga4ColorPalettes[idx])
@@ -332,8 +343,8 @@ func (d *decoder) decodePaletted(bufR *bufio.Reader) (image.Image, error) {
 	width, height := d.bounds.Dx(), d.bounds.Dy()
 	buf := make([]byte, d.bytesPerScanline)
 	mask := byte((1 << uint(d.bpp)) - 1)
-	for y := 0; y < height; y++ {
-		if err := d.rleDecode(bufR, buf); err != nil {
+	for y := range height {
+		if err := rleDecode(bufR, buf, d.bytesPerScanline); err != nil {
 			return img, err
 		}
 		shift := byte(8 - d.bpp)
@@ -361,13 +372,13 @@ func (d *decoder) decodePlanar(bufR *bufio.Reader) (image.Image, error) {
 	width := d.bounds.Dx()
 	height := d.bounds.Dy()
 	buf := make([]byte, d.bytesPerScanline)
-	for y := 0; y < height; y++ {
-		if err := d.rleDecode(bufR, buf); err != nil {
+	for y := range height {
+		if err := rleDecode(bufR, buf, d.bytesPerScanline); err != nil {
 			return nil, err
 		}
-		for x := 0; x < width; x++ {
-			v := byte(0)
-			for i := 0; i < d.nplanes; i++ {
+		for x := range width {
+			var v byte
+			for i := range d.nplanes {
 				v = (v >> 1) | ((buf[d.bytesPerLine*i+(x/8)] << (uint(x) & 7)) & 0x80)
 			}
 			v >>= uint(8 - d.nplanes)
@@ -375,31 +386,4 @@ func (d *decoder) decodePlanar(bufR *bufio.Reader) (image.Image, error) {
 		}
 	}
 	return img, nil
-}
-
-func (d *decoder) rleDecode(bufR *bufio.Reader, out []byte) error {
-	for off := 0; off < d.bytesPerScanline; {
-		val, err := bufR.ReadByte()
-		if err != nil {
-			return err
-		}
-		run := 1
-		if val >= 0xc0 {
-			run = int(val & 0x3f)
-			val, err = bufR.ReadByte()
-			if err != nil {
-				return err
-			}
-		}
-		for i := 0; i < run; i++ {
-			if off >= d.bytesPerScanline {
-				return errors.New("pcx: RLE overrun")
-			}
-			if off < len(out) {
-				out[off] = val
-			}
-			off++
-		}
-	}
-	return nil
 }
