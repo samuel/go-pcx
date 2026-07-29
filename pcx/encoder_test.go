@@ -14,6 +14,11 @@ import (
 func TestEncoder(t *testing.T) {
 	t.Parallel()
 	savePNG := os.Getenv("PCX_TEST_SAVE") != ""
+	if savePNG {
+		if err := os.MkdirAll("testout", 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	testImages, err := filepath.Glob("testdata/*.pcx")
 	if err != nil {
@@ -22,6 +27,9 @@ func TestEncoder(t *testing.T) {
 
 	for _, path := range testImages {
 		name := filepath.Base(path)
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
 		t.Run(name, func(t *testing.T) {
 			// Skip CGA images for now
 			if strings.HasPrefix(name, "cga") {
