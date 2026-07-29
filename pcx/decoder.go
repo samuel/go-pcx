@@ -58,6 +58,10 @@ type decoder struct {
 	paletteInfo      int
 	pb4              bool
 	colorModel       color.Model
+	// palette is the palette carried in the header colormap, set by readHeader for
+	// the variants that have one. It is nil for the 8bpp variants, whose palette is
+	// either absent or stored after the pixel data.
+	palette color.Palette
 }
 
 type Image struct {
@@ -106,6 +110,13 @@ func Decode(r io.Reader) (image.Image, error) {
 
 // DecodeConfig returns the color model and dimensions of a PCX image
 // without decoding the entire image.
+//
+// For the variants whose palette lives in the 128-byte header — 1bpp mono, CGA,
+// EGA and the planar variants — the reported ColorModel is the color.Palette
+// Decode will use. The 8 bits per pixel single plane variant stores its palette
+// after the pixel data, so it cannot be reported here: that variant reports
+// color.RGBAModel even though Decode returns an *image.Paletted (or an
+// *image.Gray for a grayscale file carrying no palette).
 func DecodeConfig(r io.Reader) (image.Config, error) {
 	d, err := newDecoder(r)
 	if err != nil {
@@ -149,10 +160,7 @@ func newDecoder(r io.Reader) (*decoder, error) {
 		r: r,
 	}
 	if err := d.readHeader(); err != nil {
-		if errors.Is(err, io.EOF) {
-			err = io.ErrUnexpectedEOF
-		}
-		return nil, err
+		return nil, unexpectedEOF(err)
 	}
 	return d, nil
 }
@@ -171,6 +179,11 @@ func (d *decoder) readHeader() error {
 
 	d.version = int(buf[1])
 	d.rle = buf[2] == 1
+	if !d.rle {
+		// Rejected here rather than in decode so DecodeConfig doesn't report the
+		// dimensions of a file Decode then refuses.
+		return UnsupportedError("non-RLE")
+	}
 	d.bpp = int(buf[3])
 	switch d.bpp {
 	case 1, 2, 4, 8:
@@ -218,23 +231,91 @@ func (d *decoder) readHeader() error {
 		return FormatError(fmt.Sprintf("image too large %d x %d", d.bounds.Dx(), d.bounds.Dy()))
 	}
 
-	// The four plane truecolor variant carries an alpha plane and decodes to
-	// *image.NRGBA. Every other variant is opaque. See the note on the 8bpp single
-	// plane limitation in DecodeConfig.
-	if d.bpp == 8 && d.nplanes == 4 {
+	switch {
+	case d.hasHeaderPalette():
+		// The palette is in the colormap, so it is known without reading the pixel
+		// data and color.Palette is the exact color model.
+		d.palette, err = d.headerPalette()
+		if err != nil {
+			return err
+		}
+		d.colorModel = d.palette
+	case d.bpp == 8 && d.nplanes == 4:
+		// The four plane truecolor variant carries an alpha plane and decodes to
+		// *image.NRGBA.
 		d.colorModel = color.NRGBAModel
-	} else {
+	default:
+		// Every other variant is opaque. See the note on the 8bpp single plane
+		// limitation in DecodeConfig.
 		d.colorModel = color.RGBAModel
 	}
 
 	return nil
 }
 
-func (d *decoder) decode() (image.Image, error) {
-	if !d.rle {
-		return nil, UnsupportedError("non-RLE")
-	}
+// hasHeaderPalette reports whether this variant's palette comes from the 48 byte
+// colormap in the header, and so is known before the pixel data is read. Only the
+// variants decode routes to decodePaletted or decodePlanar qualify; the 8bpp
+// single plane variant's palette follows the pixel data.
+func (d *decoder) hasHeaderPalette() bool {
+	return (d.nplanes == 1 && d.bpp < 8) || (d.bpp == 1 && d.nplanes >= 2 && d.nplanes <= 4)
+}
 
+// headerPalette builds the palette for the variants hasHeaderPalette reports on.
+// The decoder always returns a full 1<<bpp (or 1<<nplanes for the planar variants)
+// entries, since a pixel value can index any of them.
+func (d *decoder) headerPalette() (color.Palette, error) {
+	bits := d.bpp
+	if d.nplanes > 1 {
+		bits = d.nplanes
+	}
+	pal := make(color.Palette, 1<<uint(bits))
+	switch {
+	case d.nplanes == 1 && d.bpp == 1: // B&W
+		pal[0] = color.Black
+		pal[1] = color.White
+	case d.nplanes == 1 && d.bpp == 2 && d.bounds.Dx() == 320 && d.bounds.Dy() == 200: // CGA
+		// The background is the high nibble of the first colormap entry's red byte in
+		// both encodings.
+		pal[0] = cga16ColorPalette[d.colormap[0]>>4]
+		// PC Paintbrush 3.0 stores nothing but three flag bits in colormap[3] and leaves
+		// the rest of the second entry zero, so any other bit set there means the entry
+		// holds a real RGB colour and the 4.0 encoding is in use. Byte 68 is no signal
+		// here: PB 3.0 and later set it on any colour file, CGA or not.
+		var idx int
+		if d.colormap[3]&0x1f != 0 || d.colormap[4] != 0 || d.colormap[5] != 0 {
+			// PC Paintbush 4.0 writes the approximate RGB of palette entry 1 and the
+			// palette is recovered from it. Described in
+			// https://moddingwiki.shikadi.net/wiki/PCX_Format#Newer_method
+			// G = colormap[4]
+			// B = colormap[5]
+			// Pick green palette if G>B in slot 1
+			// Pick bright palette if max(G,B) > 200
+			// There is no colour burst bit, so only palettes 0-3 are reachable.
+			if d.colormap[5] >= d.colormap[4] {
+				idx |= 2
+			}
+			if max(d.colormap[5], d.colormap[4]) > 200 {
+				idx |= 1
+			}
+		} else {
+			// PC Paintbrush 3.0: colour burst, palette and intensity in bits 7-5.
+			idx = int(d.colormap[3] >> 5)
+		}
+		copy(pal[1:], cga4ColorPalettes[idx])
+	default: // EGA, and the planar variants
+		if len(pal)*3 > len(d.colormap) {
+			return nil, FormatError(fmt.Sprintf("palette larger (%d) than available colormap (%d)", len(pal)*3, len(d.colormap)))
+		}
+		for i := 0; i < len(pal)*3; i += 3 {
+			pal[i/3] = color.RGBA{R: d.colormap[i], G: d.colormap[i+1], B: d.colormap[i+2], A: 255}
+		}
+	}
+	return pal, nil
+}
+
+func (d *decoder) decode() (image.Image, error) {
+	// Non-RLE input is rejected by readHeader, so d.rle is always set here.
 	bufR := bufio.NewReader(d.r)
 
 	switch {
@@ -298,10 +379,7 @@ func (d *decoder) readExtendedPalette(bufR *bufio.Reader) (color.Palette, error)
 
 	var palBytes [3 * 256]byte
 	if _, err := io.ReadFull(bufR, palBytes[:]); err != nil {
-		if errors.Is(err, io.EOF) {
-			err = io.ErrUnexpectedEOF
-		}
-		return nil, err
+		return nil, unexpectedEOF(err)
 	}
 	pal := make(color.Palette, 256)
 	for i := range pal {
@@ -347,57 +425,16 @@ func (d *decoder) decodeRGB(bufR *bufio.Reader) (image.Image, error) {
 	return &image.RGBA{Pix: pix, Stride: stride, Rect: d.bounds}, nil
 }
 
+// decodePaletted decodes the single plane variants below 8 bits per pixel, whose
+// palette readHeader has already built from the header colormap.
 func (d *decoder) decodePaletted(bufR *bufio.Reader) (image.Image, error) {
-	pal := make([]color.Color, 1<<uint(d.bpp))
-	switch {
-	case d.bpp == 1: // B&W
-		pal[0] = color.Black
-		pal[1] = color.White
-	case d.bpp == 2 && d.bounds.Dx() == 320 && d.bounds.Dy() == 200: // CGA
-		// The background is the high nibble of the first colormap entry's red byte in
-		// both encodings.
-		pal[0] = cga16ColorPalette[d.colormap[0]>>4]
-		// PC Paintbrush 3.0 stores nothing but three flag bits in colormap[3] and leaves
-		// the rest of the second entry zero, so any other bit set there means the entry
-		// holds a real RGB colour and the 4.0 encoding is in use. Byte 68 is no signal
-		// here: PB 3.0 and later set it on any colour file, CGA or not.
-		var idx int
-		if d.colormap[3]&0x1f != 0 || d.colormap[4] != 0 || d.colormap[5] != 0 {
-			// PC Paintbush 4.0 writes the approximate RGB of palette entry 1 and the
-			// palette is recovered from it. Described in
-			// https://moddingwiki.shikadi.net/wiki/PCX_Format#Newer_method
-			// G = colormap[4]
-			// B = colormap[5]
-			// Pick green palette if G>B in slot 1
-			// Pick bright palette if max(G,B) > 200
-			// There is no colour burst bit, so only palettes 0-3 are reachable.
-			if d.colormap[5] >= d.colormap[4] {
-				idx |= 2
-			}
-			if max(d.colormap[5], d.colormap[4]) > 200 {
-				idx |= 1
-			}
-		} else {
-			// PC Paintbrush 3.0: colour burst, palette and intensity in bits 7-5.
-			idx = int(d.colormap[3] >> 5)
-		}
-		copy(pal[1:], cga4ColorPalettes[idx])
-	default: // EGA
-		if len(pal)*3 > len(d.colormap) {
-			return nil, fmt.Errorf("palette larger (%d) than available colormap (%d)", len(pal)*3, len(d.colormap))
-		}
-		for i := 0; i < len(pal)*3; i += 3 {
-			pal[i/3] = color.RGBA{R: d.colormap[i], G: d.colormap[i+1], B: d.colormap[i+2], A: 255}
-		}
-	}
-
-	img := image.NewPaletted(d.bounds, pal)
+	img := image.NewPaletted(d.bounds, d.palette)
 	width, height := d.bounds.Dx(), d.bounds.Dy()
 	buf := make([]byte, d.bytesPerScanline)
 	mask := byte((1 << uint(d.bpp)) - 1)
 	for y := range height {
 		if err := rleDecode(bufR, buf, 0); err != nil {
-			return img, err
+			return nil, err
 		}
 		shift := byte(8 - d.bpp)
 		for x, o := 0, 0; x < width; x++ {
@@ -414,12 +451,10 @@ func (d *decoder) decodePaletted(bufR *bufio.Reader) (image.Image, error) {
 	return img, nil
 }
 
+// decodePlanar decodes the 1 bit per pixel multi-plane variants, whose palette
+// readHeader has already built from the header colormap.
 func (d *decoder) decodePlanar(bufR *bufio.Reader) (image.Image, error) {
-	pal := make([]color.Color, 1<<uint(d.nplanes))
-	for i := 0; i < len(pal)*3; i += 3 {
-		pal[i/3] = color.RGBA{R: d.colormap[i], G: d.colormap[i+1], B: d.colormap[i+2], A: 255}
-	}
-	img := image.NewPaletted(d.bounds, pal)
+	img := image.NewPaletted(d.bounds, d.palette)
 
 	width := d.bounds.Dx()
 	height := d.bounds.Dy()

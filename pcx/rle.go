@@ -3,7 +3,17 @@ package pcx
 import (
 	"bufio"
 	"errors"
+	"io"
 )
+
+// unexpectedEOF maps a clean end of stream onto io.ErrUnexpectedEOF, so a
+// truncated file can't be mistaken for one that simply ended.
+func unexpectedEOF(err error) error {
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
+	}
+	return err
+}
 
 type rleEncoder struct {
 	buf  []byte
@@ -52,24 +62,27 @@ func (r *rleEncoder) flush() []byte {
 // bytes of scanline padding. Runs never cross a scanline boundary, so a run
 // that would decode past the end of the scanline is an error rather than
 // something to clamp.
+//
+// A file that ends mid-scanline is truncated, so io.EOF is reported as
+// io.ErrUnexpectedEOF: a caller must not mistake it for a clean end of stream.
 func rleDecode(bufR *bufio.Reader, out []byte, pad int) error {
 	total := len(out) + pad
 	for off := 0; off < total; {
 		val, err := bufR.ReadByte()
 		if err != nil {
-			return err
+			return unexpectedEOF(err)
 		}
 		run := 1
 		if val >= 0xc0 {
 			run = int(val & 0x3f)
 			val, err = bufR.ReadByte()
 			if err != nil {
-				return err
+				return unexpectedEOF(err)
 			}
 		}
 		for range run {
 			if off >= total {
-				return errors.New("pcx: RLE overrun")
+				return FormatError("RLE overrun")
 			}
 			if off < len(out) {
 				out[off] = val
