@@ -12,8 +12,7 @@ import (
 
 func TestDecoder(t *testing.T) {
 	t.Parallel()
-	savePNG := os.Getenv("PCX_TEST_SAVE") != ""
-	if savePNG {
+	if *flagSave {
 		if err := os.MkdirAll("testout", 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -53,7 +52,7 @@ func TestDecoder(t *testing.T) {
 				return
 			}
 
-			if savePNG {
+			if *flagSave {
 				w, err := os.Create(fmt.Sprintf("testout/out-%s.png", filepath.Base(path)))
 				if err != nil {
 					t.Fatal(err)

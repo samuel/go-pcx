@@ -20,3 +20,23 @@ CGA_RGBI.PCX    Less commonly-used lightred-lightgreen-yellow palette
 
 CGA_BW.PCX    640x200 B&W pic in case he didn't have a sample.  
 Most PCX decoders handle this just fine.
+
+----------------------------------------------------------------------
+
+cga_pb3.pcx is NOT part of Jim Leonard's set and is NOT hardware verified.
+
+All four files above use the PC Paintbrush 4.0 CGA encoding, where colormap
+entry 1 holds the approximate RGB of palette colour 1. That left the older
+PC Paintbrush 3.0 encoding -- three flag bits in colormap[3] (colour burst,
+palette, intensity) and nothing else -- decoded by no fixture at all.
+
+cga_pb3.pcx fills that gap. It is cga_fsd.pcx's pixel data verbatim with the
+48-byte colormap zeroed except colormap[3] = 0x20, i.e. the intensity flag,
+selecting palette 1: light green, light red, yellow on a black background.
+It must render in those colours, not in cga_fsd.pcx's light cyan / light
+magenta / white.
+
+Palette index 0-3 was used deliberately. The colour burst palettes (4-7) are
+only reachable through the 3.0 encoding, and the encoder can only write the
+4.0 form, so a burst palette would not survive TestEncoder's round trip.
+Those palettes therefore remain uncovered by any fixture.

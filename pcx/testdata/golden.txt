@@ -1,0 +1,29 @@
+# Golden decode records: the decoded output every fixture must keep producing.
+#
+# Regenerate with `go test ./pcx/ -update`. A diff here means decoded output changed:
+# judge it by eye with `go test ./pcx/ -save` before committing. See golden-pcx.txt for
+# how the values were verified in the first place.
+#
+# name  type  bounds  stride  palette(count/hash)  pixels(hash)
+16c.pcx            *image.Paletted  (0,0)-(640,480)    stride=640  pal=16/82f94b16  pix=7ced78f86a0c0740
+ap294a.pcx         *image.Paletted  (0,0)-(28,9)       stride=28   pal=16/dded0dd1  pix=68ff6653dbb4e22d
+ap296a.pcx         *image.Paletted  (0,0)-(82,11)      stride=82   pal=16/daac48c7  pix=2966359c0e63f172
+cga_bw.pcx         *image.Paletted  (0,0)-(640,200)    stride=640  pal=2/41d342bc   pix=ea91c481176c61be
+cga_fsd.pcx        *image.Paletted  (0,0)-(320,200)    stride=320  pal=4/a52282ab   pix=d277f658e9517978
+cga_pb3.pcx        *image.Paletted  (0,0)-(320,200)    stride=320  pal=4/ade50eae   pix=d277f658e9517978
+cga_rgbi.pcx       *image.Paletted  (0,0)-(320,200)    stride=320  pal=4/f372cea9   pix=5ae02d40326997e9
+cga_tst1.pcx       *image.Paletted  (0,0)-(320,200)    stride=320  pal=4/731a9fe6   pix=64aa81920d1896a2
+gray8.pcx          *image.Paletted  (0,0)-(71,53)      stride=71   pal=256/c1495a14 pix=37c2693dbcccd8de
+gray8_nopal.pcx    *image.Gray      (0,0)-(71,53)      stride=71   -                pix=37c2693dbcccd8de
+lena3.pcx          *image.Paletted  (0,0)-(512,512)    stride=512  pal=16/a40a1470  pix=eed923d62c562de2
+lena6.pcx          *image.Paletted  (0,0)-(512,512)    stride=512  pal=8/8e03f315   pix=0506604bf9d6b8b5
+lena7.pcx          *image.Paletted  (0,0)-(512,512)    stride=512  pal=4/01ac084d   pix=39f1b50b0049f087
+lena8.pcx          *image.Paletted  (0,0)-(512,512)    stride=512  pal=4/01ac084d   pix=39f1b50b0049f087
+new-3.pcx          *image.Paletted  (0,0)-(36,36)      stride=36   pal=2/41d342bc   pix=23514941d8b5d8c8
+quake00.pcx        *image.Paletted  (0,0)-(320,200)    stride=320  pal=256/1bd59f43 pix=fdbfc0501c953237
+rgb-oddwidth.pcx   *image.RGBA      (0,0)-(21,7)       stride=84   -                pix=271e7ea41ebd950e
+rgba8.pcx          *image.NRGBA     (0,0)-(64,48)      stride=256  -                pix=a5693ee77d52d10b
+ttt.pcx            *image.Paletted  (0,0)-(320,200)    stride=320  pal=256/ca27b144 pix=15063bf9ea1a67aa
+v0-paletted.pcx    *image.Paletted  (0,0)-(80,80)      stride=80   pal=2/41d342bc   pix=74f984eb24ee22c7
+v5-rgb.pcx         *image.RGBA      (0,0)-(80,80)      stride=320  -                pix=6a87edcd66a1d992
+vball.pcx          *image.Paletted  (0,0)-(320,200)    stride=320  pal=256/b6ca818a pix=6ab815ea69c6ff92

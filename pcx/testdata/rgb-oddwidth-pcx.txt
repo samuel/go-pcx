@@ -1,0 +1,25 @@
+Provenance of rgb-oddwidth.pcx
+
+Written by this package's own encoder from a 21x7 *image.RGBA gradient, so unlike
+gray8.pcx and rgba8.pcx it is not independent evidence of anything -- its only job is
+to reach a scanline layout no other fixture reaches.
+
+What it covers:
+
+  21 pixels of truecolor need 21 bytes per plane, which the format rounds up to an even
+  BytesPerLine of 22. That padding byte is decoded and discarded inside decodeRGB and
+  emitted by truecolorEncoder's per-row flush. It is the only 8bpp multi-plane fixture
+  where BytesPerLine exceeds the width.
+
+  It replaced marbles.pcx (1419x1001, 3.8 MB), which was the only real-world file with
+  an odd truecolor width and was a third of this directory's size on its own. The
+  pixel content of marbles.pcx was never asserted on -- TestDecoder only requires that
+  decoding does not error, and TestEncoder only requires a round trip -- so a 547-byte
+  file covers exactly the same code.
+
+Expected decoder behavior:
+
+  rgb-oddwidth.pcx -> *image.RGBA, opaque, 8bpp / 3 planes, BytesPerLine 22
+
+The gradient carries a per-pixel wobble in the blue channel so the three planes differ
+and the RLE runs stay short, exercising literal bytes as well as runs.

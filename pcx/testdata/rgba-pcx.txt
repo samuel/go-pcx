@@ -5,7 +5,7 @@ usable as independent evidence that the four plane decode path is right.
 
 Why a synthetic file was needed:
 
-  None of the 108 real-world PCX files in this directory is 8bpp / 4 planes. The four
+  None of the real-world PCX files collected for this package is 8bpp / 4 planes. The four
   plane form is rare in the wild because PC Paintbrush never wrote it, but ImageMagick
   emits it for any input with an alpha channel.
 

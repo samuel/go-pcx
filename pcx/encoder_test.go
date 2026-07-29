@@ -13,8 +13,7 @@ import (
 
 func TestEncoder(t *testing.T) {
 	t.Parallel()
-	savePNG := os.Getenv("PCX_TEST_SAVE") != ""
-	if savePNG {
+	if *flagSave {
 		if err := os.MkdirAll("testout", 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -76,7 +75,7 @@ func TestEncoder(t *testing.T) {
 				t.Fatalf("Failed to decode after encode: %s", err)
 			}
 
-			if savePNG {
+			if *flagSave {
 				w, err := os.Create(fmt.Sprintf("testout/out-%s-0.png", filepath.Base(path)))
 				if err != nil {
 					t.Fatal(err)
