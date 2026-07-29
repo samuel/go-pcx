@@ -218,7 +218,14 @@ func (d *decoder) readHeader() error {
 		return FormatError(fmt.Sprintf("image too large %d x %d", d.bounds.Dx(), d.bounds.Dy()))
 	}
 
-	d.colorModel = color.RGBAModel
+	// The four plane truecolor variant carries an alpha plane and decodes to
+	// *image.NRGBA. Every other variant is opaque. See the note on the 8bpp single
+	// plane limitation in DecodeConfig.
+	if d.bpp == 8 && d.nplanes == 4 {
+		d.colorModel = color.NRGBAModel
+	} else {
+		d.colorModel = color.RGBAModel
+	}
 
 	return nil
 }
@@ -303,29 +310,41 @@ func (d *decoder) readExtendedPalette(bufR *bufio.Reader) (color.Palette, error)
 	return pal, nil
 }
 
+// decodeRGB decodes the 8 bits per pixel, three or four plane truecolor variants.
+// image.RGBA and image.NRGBA share the same 4-byte-per-pixel layout, so the same
+// pixel buffer backs either.
 func (d *decoder) decodeRGB(bufR *bufio.Reader) (image.Image, error) {
-	img := image.NewRGBA(d.bounds)
 	width := d.bounds.Dx()
 	height := d.bounds.Dy()
+	stride := 4 * width
+	pix := make([]byte, stride*height)
 	offset := 0
 	buf := make([]byte, d.bytesPerScanline)
 	for range height {
 		if err := rleDecode(bufR, buf, 0); err != nil {
-			return img, err
+			return nil, err
 		}
 		for x := range width {
-			img.Pix[offset] = buf[x]
-			img.Pix[offset+1] = buf[x+d.bytesPerLine]
-			img.Pix[offset+2] = buf[x+2*d.bytesPerLine]
+			pix[offset] = buf[x]
+			pix[offset+1] = buf[x+d.bytesPerLine]
+			pix[offset+2] = buf[x+2*d.bytesPerLine]
 			if d.nplanes == 4 {
-				img.Pix[offset+3] = buf[x+3*d.bytesPerLine]
+				pix[offset+3] = buf[x+3*d.bytesPerLine]
 			} else {
-				img.Pix[offset+3] = 255
+				pix[offset+3] = 255
 			}
 			offset += 4
 		}
 	}
-	return img, nil
+	if d.nplanes == 4 {
+		// A fourth plane holds straight, not premultiplied, alpha, which is what
+		// image.NRGBA stores. Putting it in an image.RGBA would break that type's
+		// premultiplied invariant: a value above the alpha is not representable.
+		return &image.NRGBA{Pix: pix, Stride: stride, Rect: d.bounds}, nil
+	}
+	// Three planes are always fully opaque, where premultiplied and straight alpha
+	// coincide, so the more widely handled image.RGBA is used.
+	return &image.RGBA{Pix: pix, Stride: stride, Rect: d.bounds}, nil
 }
 
 func (d *decoder) decodePaletted(bufR *bufio.Reader) (image.Image, error) {

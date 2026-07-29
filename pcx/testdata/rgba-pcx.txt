@@ -1,0 +1,42 @@
+Provenance of the 8bpp truecolor-with-alpha fixtures: rgba8.pcx, rgba8.png
+
+Both files were produced by ImageMagick, not by this package's encoder, so rgba8.pcx is
+usable as independent evidence that the four plane decode path is right.
+
+Why a synthetic file was needed:
+
+  None of the 108 real-world PCX files in this directory is 8bpp / 4 planes. The four
+  plane form is rare in the wild because PC Paintbrush never wrote it, but ImageMagick
+  emits it for any input with an alpha channel.
+
+How they were generated:
+
+  # A gradient for long RLE runs plus seeded Gaussian noise for literals and for bytes
+  # >= 0xc0 (the RLE run marker), with alpha ramping 0..254 left to right so no pixel
+  # is fully opaque. The width is even so BytesPerLine (64) is even as the format
+  # requires -- ImageMagick does not pad odd widths.
+  magick -size 64x48 gradient:red-blue -seed 42 -attenuate 0.5 +noise Gaussian \
+      -alpha set -channel A -fx 'i/w' +channel -depth 8 png32:rgba8.png
+  magick rgba8.png rgba8.pcx
+
+  Header: ver=5 bpp=8 nplanes=4 bytesPerLine=64 palinfo=1
+
+The fourth plane holds *straight*, not premultiplied, alpha. Verified directly on a
+two pixel file whose first pixel is srgba(200,100,50,128): the planes come out as
+red=[200,10] alpha=[128,255], i.e. red exceeds alpha, which no premultiplied encoding
+allows. That is why the decoder returns *image.NRGBA for four planes; putting those
+bytes in an *image.RGBA would violate that type's premultiplied invariant.
+
+rgba8.png is the ground truth for pixel content -- ImageMagick reads identical pixels
+back out of the PCX and the PNG, and Go's PNG decoder returns it as an *image.NRGBA
+whose Pix has exactly the layout the PCX decoder produces. alpha_test.go compares the
+two byte for byte.
+
+Expected decoder behavior:
+
+  rgba8.pcx -> *image.NRGBA, straight alpha, DecodeConfig reports color.NRGBAModel
+
+The file is deliberately *not* fully opaque, which alpha_test.go asserts: an opaque
+image is written back out in the three plane form and so decodes as *image.RGBA, which
+would make it fail TestEncoder's same-type check. Opaque four plane input is covered
+by TestEncodeOpaqueAlphaTypes instead, which asserts that type change on purpose.

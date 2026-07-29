@@ -16,6 +16,8 @@ func Encode(w io.Writer, m image.Image) error {
 	switch im := m.(type) {
 	case *image.RGBA:
 		return encodeRGBA(w, im, em)
+	case *image.NRGBA:
+		return encodeNRGBA(w, im, em)
 	case *image.Gray:
 		return encodeGray(w, im, em)
 	case *image.Paletted:
@@ -29,35 +31,93 @@ func Encode(w io.Writer, m image.Image) error {
 	return encodeGeneric(w, m, em)
 }
 
-func encodeGeneric(w io.Writer, m image.Image, em *Image) error {
+// isOpaque reports whether every pixel of m is fully opaque, which decides whether
+// the truecolor paths need a fourth plane for alpha. Everything in image/ implements
+// Opaque, so the per-pixel fallback is only for foreign implementations.
+func isOpaque(m image.Image) bool {
+	if o, ok := m.(interface{ Opaque() bool }); ok {
+		return o.Opaque()
+	}
+	b := m.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if _, _, _, a := m.At(x, y).RGBA(); a != 0xffff {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// truecolorEncoder writes the 8bpp three or four plane variants one row at a time.
+// One RLE encoder per plane, all flushed at the end of every row, since a run may
+// never cross a scanline boundary.
+type truecolorEncoder struct {
+	w     io.Writer
+	lines []*rleEncoder
+	odd   int
+}
+
+// newTruecolorEncoder writes the header for m and returns an encoder for its rows.
+// nplanes is 4 when m carries alpha, in which case the fourth plane holds straight
+// alpha as PCX stores it.
+func newTruecolorEncoder(w io.Writer, m image.Image, em *Image, nplanes int) (*truecolorEncoder, error) {
 	b := m.Bounds()
 	odd := b.Dx() & 1
 	bytesPerLine := b.Dx() + odd
-	if err := writeHeader(w, 8, 3, bytesPerLine, b, nil, em, false); err != nil {
+	if err := writeHeader(w, 8, nplanes, bytesPerLine, b, nil, em, false); err != nil {
+		return nil, err
+	}
+	e := &truecolorEncoder{w: w, lines: make([]*rleEncoder, nplanes), odd: odd}
+	for i := range e.lines {
+		e.lines[i] = newRLEEncoder(bytesPerLine)
+	}
+	return e, nil
+}
+
+// put appends one pixel to the current row. The alpha is ignored when the encoder
+// was created for three planes.
+func (e *truecolorEncoder) put(r, g, b, a byte) {
+	e.lines[0].put(r)
+	e.lines[1].put(g)
+	e.lines[2].put(b)
+	if len(e.lines) == 4 {
+		e.lines[3].put(a)
+	}
+}
+
+// flush pads the current row to bytesPerLine and writes every plane.
+func (e *truecolorEncoder) flush() error {
+	for _, l := range e.lines {
+		if e.odd != 0 {
+			l.put(0)
+		}
+		if _, err := e.w.Write(l.flush()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func encodeGeneric(w io.Writer, m image.Image, em *Image) error {
+	nplanes := 3
+	if !isOpaque(m) {
+		nplanes = 4
+	}
+	e, err := newTruecolorEncoder(w, m, em, nplanes)
+	if err != nil {
 		return err
 	}
-	rline := newRLEEncoder(bytesPerLine)
-	gline := newRLEEncoder(bytesPerLine)
-	bline := newRLEEncoder(bytesPerLine)
+	b := m.Bounds()
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		for x := b.Min.X; x < b.Max.X; x++ {
-			r, g, b, _ := m.At(x, y).RGBA()
-			rline.put(byte(r >> 8))
-			gline.put(byte(g >> 8))
-			bline.put(byte(b >> 8))
+			// Color.RGBA returns premultiplied values while PCX stores straight
+			// alpha, so converting through color.NRGBA is what keeps a translucent
+			// pixel's color from being darkened by its own alpha.
+			c := color.NRGBAModel.Convert(m.At(x, y)).(color.NRGBA)
+			e.put(c.R, c.G, c.B, c.A)
 		}
-		if odd != 0 {
-			rline.put(0)
-			gline.put(0)
-			bline.put(0)
-		}
-		if _, err := w.Write(rline.flush()); err != nil {
-			return err
-		}
-		if _, err := w.Write(gline.flush()); err != nil {
-			return err
-		}
-		if _, err := w.Write(bline.flush()); err != nil {
+		if err := e.flush(); err != nil {
 			return err
 		}
 	}
@@ -65,37 +125,52 @@ func encodeGeneric(w io.Writer, m image.Image, em *Image) error {
 }
 
 func encodeRGBA(w io.Writer, m *image.RGBA, em *Image) error {
-	b := m.Bounds()
-	odd := b.Dx() & 1
-	bytesPerLine := b.Dx() + odd
-	if err := writeHeader(w, 8, 3, bytesPerLine, b, nil, em, false); err != nil {
+	if !m.Opaque() {
+		// image.RGBA is alpha-premultiplied, so a translucent image has to be
+		// un-premultiplied before it can be written. encodeGeneric does that
+		// conversion per pixel; the fast path below is only valid while alpha is
+		// 255, where the two representations are identical.
+		return encodeGeneric(w, m, em)
+	}
+	e, err := newTruecolorEncoder(w, m, em, 3)
+	if err != nil {
 		return err
 	}
-	width := b.Dx()
-	height := b.Dy()
-	rline := newRLEEncoder(bytesPerLine)
-	gline := newRLEEncoder(bytesPerLine)
-	bline := newRLEEncoder(bytesPerLine)
-	for y := range height {
+	b := m.Bounds()
+	for y := range b.Dy() {
 		o := y * m.Stride
-		for range width {
-			rline.put(m.Pix[o])
-			gline.put(m.Pix[o+1])
-			bline.put(m.Pix[o+2])
+		for range b.Dx() {
+			e.put(m.Pix[o], m.Pix[o+1], m.Pix[o+2], 255)
 			o += 4
 		}
-		if odd != 0 {
-			rline.put(0)
-			gline.put(0)
-			bline.put(0)
-		}
-		if _, err := w.Write(rline.flush()); err != nil {
+		if err := e.flush(); err != nil {
 			return err
 		}
-		if _, err := w.Write(gline.flush()); err != nil {
-			return err
+	}
+	return nil
+}
+
+// encodeNRGBA writes m as the 8bpp truecolor variant. image.NRGBA already holds
+// straight alpha, which is what PCX stores, so its Pix goes out as is. The alpha
+// plane is written only when the image needs it, keeping opaque images to the three
+// plane form that every PCX reader handles.
+func encodeNRGBA(w io.Writer, m *image.NRGBA, em *Image) error {
+	nplanes := 3
+	if !m.Opaque() {
+		nplanes = 4
+	}
+	e, err := newTruecolorEncoder(w, m, em, nplanes)
+	if err != nil {
+		return err
+	}
+	b := m.Bounds()
+	for y := range b.Dy() {
+		o := y * m.Stride
+		for range b.Dx() {
+			e.put(m.Pix[o], m.Pix[o+1], m.Pix[o+2], m.Pix[o+3])
+			o += 4
 		}
-		if _, err := w.Write(bline.flush()); err != nil {
+		if err := e.flush(); err != nil {
 			return err
 		}
 	}
