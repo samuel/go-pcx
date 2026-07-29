@@ -1,6 +1,7 @@
 package pcx
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"io"
@@ -264,6 +265,24 @@ func encodePalettedImage(w io.Writer, m image.PalettedImage, p color.Palette, em
 }
 
 func writeHeader(w io.Writer, bpp, nplanes, bytesPerLine int, bounds image.Rectangle, egaPalette color.Palette, em *Image) error {
+	// PCX stores the origin, the inclusive maximum and the bytes per line as
+	// unsigned 16-bit values, so anything outside that range would silently
+	// truncate into a file that no reader can make sense of. These report a
+	// caller error rather than FormatError/UnsupportedError, which describe a
+	// malformed or unimplemented input *file*.
+	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+		return fmt.Errorf("pcx: cannot encode empty image with bounds %v", bounds)
+	}
+	if bounds.Min.X < 0 || bounds.Min.Y < 0 {
+		return fmt.Errorf("pcx: cannot encode image with negative origin %v", bounds.Min)
+	}
+	if bounds.Max.X-1 > 0xffff || bounds.Max.Y-1 > 0xffff {
+		return fmt.Errorf("pcx: image bounds %v exceed the maximum PCX dimensions of 65536x65536", bounds)
+	}
+	if bytesPerLine > 0xffff {
+		return fmt.Errorf("pcx: bytes per line (%d) exceeds the PCX maximum of 65535", bytesPerLine)
+	}
+
 	buf := make([]byte, 128)
 	buf[0] = magic
 	if em != nil && em.Version >= 0 && em.Version <= 5 {
@@ -318,6 +337,11 @@ func writeHeader(w io.Writer, bpp, nplanes, bytesPerLine int, bounds image.Recta
 func writeExtendedPalette(w io.Writer, palette color.Palette) error {
 	buf := make([]byte, 3*256+1)
 	buf[0] = paletteMagic
+	// An extended palette holds exactly 256 entries. image.Paletted permits more,
+	// but Pix is a []uint8 so entries above 255 can never be referenced.
+	if len(palette) > 256 {
+		palette = palette[:256]
+	}
 	for i, c := range palette {
 		r, g, b, _ := c.RGBA()
 		buf[1+i*3] = byte(r >> 8)
