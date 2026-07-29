@@ -128,8 +128,12 @@ func TestEncoder(t *testing.T) {
 				if !ok {
 					t.Fatalf("Expected *image.Paletted, got %T", img2)
 				}
-				if len(imgIn.Palette) != len(imgOut.Palette) {
-					t.Fatalf("Expected output image palette with %d colors, got %d",
+				// Palette length can't round-trip exactly: every sub-8bpp variant
+				// decodes to 1<<bpp or 1<<nplanes entries, so a palette only ever
+				// rounds up to the next representable size. The colors themselves
+				// must survive.
+				if len(imgOut.Palette) < len(imgIn.Palette) {
+					t.Fatalf("Expected output image palette with at least %d colors, got %d",
 						len(imgIn.Palette), len(imgOut.Palette))
 				}
 				for i, exp := range imgIn.Palette {

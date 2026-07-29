@@ -210,7 +210,14 @@ func encodePaletted(w io.Writer, m *image.Paletted, em *Image) error {
 	if len(m.Palette) <= 16 {
 		return encodePaletted16Colors(w, m, em)
 	}
+	return encodePaletted8bpp(w, m, em)
+}
 
+// encodePaletted8bpp writes m as the 8bpp single plane variant with a trailing
+// extended palette. It is the only paletted form that stores its colors verbatim, so
+// it also serves as the fallback for the small palettes the sub-8bpp variants cannot
+// represent faithfully.
+func encodePaletted8bpp(w io.Writer, m *image.Paletted, em *Image) error {
 	b := m.Bounds()
 	odd := b.Dx() & 1
 	bytesPerLine := b.Dx() + odd
@@ -253,20 +260,34 @@ func encodePaletted16Colors(w io.Writer, m *image.Paletted, em *Image) error {
 		palette[0] = color.RGBA{R: uint8(firstColIx << 4)}
 		return encodePalettedSinglePlane(w, m, em, 2, palette)
 	}
-	switch len(m.Palette) {
-	case 0, 1, 2:
-		return encodePalettedSinglePlane(w, m, em, 1, []color.Color{color.RGBA{R: 0xff}})
-	case 4:
+	switch {
+	case isBlackAndWhitePalette(m.Palette):
+		// The 1bpp variant carries no colors of its own — the decoder always
+		// reconstructs black and white — so it may only be used when that is
+		// what the palette holds.
+		return encodePalettedSinglePlane(w, m, em, 1, m.Palette)
+	case len(m.Palette) <= 4:
+		if b.Dx() == 320 && b.Dy() == 200 {
+			// Any 2bpp 320x200 file is read back as CGA, with its palette
+			// rebuilt from the colormap's flag bits and the written colors
+			// discarded. That is not resolvable from the header, so a palette
+			// that isn't CGA takes the 8bpp form instead, which costs bytes for
+			// this one shape but always round-trips.
+			return encodePaletted8bpp(w, m, em)
+		}
 		return encodePalettedSinglePlane(w, m, em, 2, m.Palette)
 	}
 
+	// The remaining sizes go out as 1bpp planes, one bit of the index per plane, so
+	// the plane count is the number of bits the largest index needs.
 	bpp := 1
 	nPlanes := 4
-	if len(m.Palette) == 8 {
+	if len(m.Palette) <= 8 {
 		nPlanes = 3
 	}
-	odd := b.Dx() & 1
-	bytesPerLine := (b.Dx() + odd + 7) / 8
+	// The number of bytes per line must be even.
+	bytesPerLine := (b.Dx() + 7) / 8
+	bytesPerLine += bytesPerLine & 1
 	if err := writeHeader(w, bpp, nPlanes, bytesPerLine, b, m.Palette, em, false); err != nil {
 		return err
 	}

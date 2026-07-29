@@ -32,6 +32,19 @@ var cga4ColorPalettes = [8][]color.Color{
 	{cga16ColorPalette[11], cga16ColorPalette[12], cga16ColorPalette[15]}, // light cyan, light red, white
 }
 
+// isBlackAndWhitePalette reports whether pal is exactly the palette the 1bpp single
+// plane variant implies. That variant stores no colors, so the decoder rebuilds black
+// and white from nothing but the bit depth: writing it is only lossless for this one
+// palette.
+func isBlackAndWhitePalette(pal color.Palette) bool {
+	if len(pal) != 2 {
+		return false
+	}
+	r0, g0, b0, _ := pal[0].RGBA()
+	r1, g1, b1, _ := pal[1].RGBA()
+	return r0|g0|b0 == 0 && r1 == 0xffff && g1 == 0xffff && b1 == 0xffff
+}
+
 func isCGAPalette(pal color.Palette) bool {
 	for _, c := range pal {
 		if cgaPaletteIndex(c) < 0 {
