@@ -164,17 +164,15 @@ func encodePaletted(w io.Writer, m *image.Paletted, em *Image) error {
 func encodePaletted16Colors(w io.Writer, m *image.Paletted, em *Image) error {
 	b := m.Bounds()
 	if len(m.Palette) == 4 && b.Dx() == 320 && b.Dy() == 200 && isCGAPalette(m.Palette) {
-		cgaIndexes := make([]int, 4)
-		for i, c := range m.Palette {
-			cgaIndexes[i] = cgaPaletteIndex(c)
-		}
+		// Write the PC Paintbrush 4.0 form: the background as a colour index in the high
+		// nibble of the first entry's red byte, and the true CGA RGB for the remaining
+		// entries. The intensity has to survive in the values themselves, since the
+		// decoder recovers it from entry 1 being brighter than 200 — expanding the index
+		// bits to 0/255 instead would turn every dim palette into its bright twin. The
+		// colour burst palettes can't be expressed in this form at all.
 		palette := make([]color.Color, len(m.Palette))
-		for i := range palette {
-			palette[i] = color.RGBA{
-				R: uint8(255 * ((cgaIndexes[i] >> 2) & 1)),
-				G: uint8(255 * ((cgaIndexes[i] >> 1) & 1)),
-				B: uint8(255 * (cgaIndexes[i] & 1)),
-			}
+		for i, c := range m.Palette {
+			palette[i] = cga16ColorPalette[cgaPaletteIndex(c)]
 		}
 		firstColIx := cgaPaletteIndex(m.Palette[0])
 		palette[0] = color.RGBA{R: uint8(firstColIx << 4)}

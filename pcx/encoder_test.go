@@ -31,10 +31,6 @@ func TestEncoder(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
-			// Skip CGA images for now
-			if strings.HasPrefix(name, "cga") {
-				t.Skip("CGA images don't roundtrip currently")
-			}
 			inBytes, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)

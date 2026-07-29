@@ -335,33 +335,32 @@ func (d *decoder) decodePaletted(bufR *bufio.Reader) (image.Image, error) {
 		pal[0] = color.Black
 		pal[1] = color.White
 	case d.bpp == 2 && d.bounds.Dx() == 320 && d.bounds.Dy() == 200: // CGA
+		// The background is the high nibble of the first colormap entry's red byte in
+		// both encodings.
 		pal[0] = cga16ColorPalette[d.colormap[0]>>4]
-		idx := int(d.colormap[3] >> 5)
-		if d.pb4 {
-			isReallyPB4 := true
-			for _, v := range d.colormap[:12] {
-				if v != 0 && v != 255 {
-					isReallyPB4 = false
-					break
-				}
+		// PC Paintbrush 3.0 stores nothing but three flag bits in colormap[3] and leaves
+		// the rest of the second entry zero, so any other bit set there means the entry
+		// holds a real RGB colour and the 4.0 encoding is in use. Byte 68 is no signal
+		// here: PB 3.0 and later set it on any colour file, CGA or not.
+		var idx int
+		if d.colormap[3]&0x1f != 0 || d.colormap[4] != 0 || d.colormap[5] != 0 {
+			// PC Paintbush 4.0 writes the approximate RGB of palette entry 1 and the
+			// palette is recovered from it. Described in
+			// https://moddingwiki.shikadi.net/wiki/PCX_Format#Newer_method
+			// G = colormap[4]
+			// B = colormap[5]
+			// Pick green palette if G>B in slot 1
+			// Pick bright palette if max(G,B) > 200
+			// There is no colour burst bit, so only palettes 0-3 are reachable.
+			if d.colormap[5] >= d.colormap[4] {
+				idx |= 2
 			}
-			if isReallyPB4 {
-				// PC Paintbush 4.0 encodes the CGA palettes differently than 3.0.
-				// Very thankful for the person that figured it out here:
-				// https://github.com/wjaguar/mtPaint/blob/master/src/png.c
-				// Also described in https://moddingwiki.shikadi.net/wiki/PCX_Format#Newer_method
-				// G = colormap[4]
-				// B = colormap[5]
-				// Pick green palette if G>B in slot 1
-				// Pick bright palette if max(G,B) > 200
-				idx = 0
-				if d.colormap[5] >= d.colormap[4] {
-					idx |= 2
-				}
-				if max(d.colormap[5], d.colormap[4]) > 200 {
-					idx |= 1
-				}
+			if max(d.colormap[5], d.colormap[4]) > 200 {
+				idx |= 1
 			}
+		} else {
+			// PC Paintbrush 3.0: colour burst, palette and intensity in bits 7-5.
+			idx = int(d.colormap[3] >> 5)
 		}
 		copy(pal[1:], cga4ColorPalettes[idx])
 	default: // EGA
