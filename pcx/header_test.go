@@ -126,7 +126,7 @@ func TestEncodeHeader(t *testing.T) {
 			if got := int(hdr[68]); got != tc.paletteInfo {
 				t.Errorf("palette info is %d, expected %d", got, tc.paletteInfo)
 			}
-			// Without a *pcx.Image to steer it, the encoder claims version 5.
+			// Without a *pcx.ImageWithHeader to steer it, the encoder claims version 5.
 			if hdr[1] != 5 {
 				t.Errorf("version is %d, expected 5", hdr[1])
 			}
@@ -164,15 +164,15 @@ func TestEncodeHeaderBounds(t *testing.T) {
 	}
 }
 
-// TestEncodeHeaderMetadata checks that the header fields only a *pcx.Image can steer
+// TestEncodeHeaderMetadata checks that the header fields only a *pcx.ImageWithHeader can steer
 // are written, and that DecodeExtended reads them back.
 func TestEncodeHeaderMetadata(t *testing.T) {
 	t.Parallel()
 
-	in := &Image{
+	in := &ImageWithHeader{
 		Image:           image.NewRGBA(image.Rect(0, 0, 4, 2)),
 		Version:         3,
-		Paintbrush4:     true,
+		PaletteInfoSet:  true,
 		HorizDPI:        300,
 		VertDPI:         301,
 		HorizScreenSize: 640,
@@ -209,7 +209,7 @@ func TestEncodeHeaderMetadata(t *testing.T) {
 		out.HorizScreenSize != in.HorizScreenSize || out.VertScreenSize != in.VertScreenSize {
 		t.Errorf("metadata round trip changed %+v into %+v", in, out)
 	}
-	if !out.Paintbrush4 {
-		t.Error("Paintbrush4 did not survive the round trip")
+	if !out.PaletteInfoSet {
+		t.Error("PaletteInfoSet did not survive the round trip")
 	}
 }

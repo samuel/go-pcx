@@ -45,7 +45,7 @@ func TestDecoder(t *testing.T) {
 				t.Fatalf("Failed to read header for %s: %s", path, err)
 				return
 			}
-			t.Logf("  %s : %dx%d version:%d pb4:%+v nplanes:%d bpp:%d", path, d.bounds.Dx(), d.bounds.Dy(), d.version, d.pb4, d.nplanes, d.bpp)
+			t.Logf("  %s : %dx%d version:%d palinfo:%d nplanes:%d bpp:%d", path, d.bounds.Dx(), d.bounds.Dy(), d.version, d.paletteInfo, d.nplanes, d.bpp)
 			img, err := d.decode()
 			if err != nil {
 				t.Fatalf("Failed to decode %s: %s", path, err)

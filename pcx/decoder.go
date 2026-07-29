@@ -56,7 +56,6 @@ type decoder struct {
 	bytesPerLine     int
 	bytesPerScanline int
 	paletteInfo      int
-	pb4              bool
 	colorModel       color.Model
 	// palette is the palette carried in the header colormap, set by readHeader for
 	// the variants that have one. It is nil for the 8bpp variants, whose palette is
@@ -64,13 +63,13 @@ type decoder struct {
 	palette color.Palette
 }
 
-// Image is a decoded PCX image together with the header metadata that the
-// image/color types have nowhere to keep. DecodeExtended returns one, and passing
-// one back to Encode is the only way to steer those header fields: Encode unwraps
-// the embedded image and writes the metadata below into the header it generates.
-// The pixel data always comes from Image, so any image.Image can be wrapped in one
+// ImageWithHeader is a decoded PCX image together with the header metadata that the
+// image and color types have nowhere to keep. DecodeExtended returns one, and passing
+// one back to Encode is the only way to steer those header fields: Encode unwraps the
+// embedded image and writes the metadata below into the header it generates. The pixel
+// data always comes from the embedded Image, so any image.Image can be wrapped in one
 // to control the header it is written with.
-type Image struct {
+type ImageWithHeader struct {
 	// Image is the decoded image itself, one of the types Decode documents.
 	image.Image
 
@@ -79,12 +78,13 @@ type Image struct {
 	// 3.0 and later. Encode writes 5 for a value outside that range, which is what
 	// every variant this package emits is compatible with.
 	Version int
-	// Paintbrush4 reports whether the palette info byte is set, which PC Paintbrush
-	// 3.0 and later do on every color file. It says nothing about the image's
-	// encoding — in particular it does not identify a CGA file. On encode it selects
-	// between a palette info byte of 1 and 0, except for a grayscale image, which
-	// must write 2.
-	Paintbrush4 bool
+	// PaletteInfoSet reports whether the palette info byte at header offset 68 is
+	// non-zero, which PC Paintbrush 3.0 and later set on every color file. It says
+	// nothing about the image's encoding — in particular it does not identify a CGA
+	// file, and PC Paintbrush IV and IV Plus ignore the byte entirely. On encode it
+	// selects between a palette info byte of 1 and 0, except for a grayscale image,
+	// which must write 2 regardless.
+	PaletteInfoSet bool
 	// HorizDPI and VertDPI are the intended resolution in dots per inch. Writers
 	// disagree about these: some store the screen resolution instead, and 0 is
 	// common. Nothing in this package interprets them.
@@ -161,9 +161,11 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 	}, nil
 }
 
-// DecodeExtended is similar to Decode except that the returned image is an
-// internal representation that maintains more metadata such as DPI.
-func DecodeExtended(r io.Reader) (*Image, error) {
+// DecodeExtended is Decode plus the header metadata that no image type can carry.
+// The returned *ImageWithHeader embeds the same image Decode would return, so it can
+// be used anywhere an image.Image is expected, and handing it back to Encode is what
+// reproduces the header fields it records.
+func DecodeExtended(r io.Reader) (*ImageWithHeader, error) {
 	d, err := newDecoder(r)
 	if err != nil {
 		return nil, err
@@ -172,10 +174,10 @@ func DecodeExtended(r io.Reader) (*Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Image{
+	return &ImageWithHeader{
 		Image:           img,
 		Version:         d.version,
-		Paintbrush4:     d.pb4,
+		PaletteInfoSet:  d.paletteInfo != 0,
 		HorizDPI:        d.horizDPI,
 		VertDPI:         d.vertDPI,
 		HorizScreenSize: d.horizScreenSize,
@@ -244,7 +246,6 @@ func (d *decoder) readHeader() error {
 	// so it only matters for the 8bpp single plane variant, where it distinguishes a
 	// grayscale image from one whose palette is missing. PB IV/IV+ ignore it entirely.
 	d.paletteInfo = int(buf[68])
-	d.pb4 = buf[68] != 0
 	// horizontal and vertical screen size in pixels are found only in PB IV/IV Plus
 	d.horizScreenSize = int(buf[70]) | (int(buf[71]) << 8)
 	d.vertScreenSize = int(buf[72]) | (int(buf[73]) << 8)
@@ -312,8 +313,8 @@ func (d *decoder) headerPalette() (color.Palette, error) {
 		pal[0] = cga16ColorPalette[d.colormap[0]>>4]
 		// PC Paintbrush 3.0 stores nothing but three flag bits in colormap[3] and leaves
 		// the rest of the second entry zero, so any other bit set there means the entry
-		// holds a real RGB colour and the 4.0 encoding is in use. Byte 68 is no signal
-		// here: PB 3.0 and later set it on any colour file, CGA or not.
+		// holds a real RGB color and the 4.0 encoding is in use. Byte 68 is no signal
+		// here: PB 3.0 and later set it on any color file, CGA or not.
 		var idx int
 		if d.colormap[3]&0x1f != 0 || d.colormap[4] != 0 || d.colormap[5] != 0 {
 			// PC Paintbush 4.0 writes the approximate RGB of palette entry 1 and the
@@ -323,7 +324,7 @@ func (d *decoder) headerPalette() (color.Palette, error) {
 			// B = colormap[5]
 			// Pick green palette if G>B in slot 1
 			// Pick bright palette if max(G,B) > 200
-			// There is no colour burst bit, so only palettes 0-3 are reachable.
+			// There is no color burst bit, so only palettes 0-3 are reachable.
 			if d.colormap[5] >= d.colormap[4] {
 				idx |= 2
 			}
@@ -331,7 +332,7 @@ func (d *decoder) headerPalette() (color.Palette, error) {
 				idx |= 1
 			}
 		} else {
-			// PC Paintbrush 3.0: colour burst, palette and intensity in bits 7-5.
+			// PC Paintbrush 3.0: color burst, palette and intensity in bits 7-5.
 			idx = int(d.colormap[3] >> 5)
 		}
 		copy(pal[1:], cga4ColorPalettes[idx])

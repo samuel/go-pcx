@@ -30,11 +30,11 @@ import (
 //     alpha plane and decodes as an *image.RGBA. Both preserve every value.
 //   - Samples wider than 8 bits are truncated to the 8 bits per channel PCX stores.
 //
-// Passing a *Image steers the header metadata; see Image. An image whose bounds PCX
-// cannot represent — empty, negative origin, or beyond 65536 in either direction — is
-// rejected with a plain error, and nothing is written to w.
+// Passing an *ImageWithHeader steers the header metadata; see ImageWithHeader. An
+// image whose bounds PCX cannot represent — empty, negative origin, or beyond 65536
+// in either direction — is rejected with a plain error, and nothing is written to w.
 func Encode(w io.Writer, m image.Image) error {
-	em, ok := m.(*Image)
+	em, ok := m.(*ImageWithHeader)
 	if ok {
 		m = em.Image
 	}
@@ -86,7 +86,7 @@ type truecolorEncoder struct {
 // newTruecolorEncoder writes the header for m and returns an encoder for its rows.
 // nplanes is 4 when m carries alpha, in which case the fourth plane holds straight
 // alpha as PCX stores it.
-func newTruecolorEncoder(w io.Writer, m image.Image, em *Image, nplanes int) (*truecolorEncoder, error) {
+func newTruecolorEncoder(w io.Writer, m image.Image, em *ImageWithHeader, nplanes int) (*truecolorEncoder, error) {
 	b := m.Bounds()
 	odd := b.Dx() & 1
 	bytesPerLine := b.Dx() + odd
@@ -124,7 +124,7 @@ func (e *truecolorEncoder) flush() error {
 	return nil
 }
 
-func encodeGeneric(w io.Writer, m image.Image, em *Image) error {
+func encodeGeneric(w io.Writer, m image.Image, em *ImageWithHeader) error {
 	nplanes := 3
 	if !isOpaque(m) {
 		nplanes = 4
@@ -149,7 +149,7 @@ func encodeGeneric(w io.Writer, m image.Image, em *Image) error {
 	return nil
 }
 
-func encodeRGBA(w io.Writer, m *image.RGBA, em *Image) error {
+func encodeRGBA(w io.Writer, m *image.RGBA, em *ImageWithHeader) error {
 	if !m.Opaque() {
 		// image.RGBA is alpha-premultiplied, so a translucent image has to be
 		// un-premultiplied before it can be written. encodeGeneric does that
@@ -179,7 +179,7 @@ func encodeRGBA(w io.Writer, m *image.RGBA, em *Image) error {
 // straight alpha, which is what PCX stores, so its Pix goes out as is. The alpha
 // plane is written only when the image needs it, keeping opaque images to the three
 // plane form that every PCX reader handles.
-func encodeNRGBA(w io.Writer, m *image.NRGBA, em *Image) error {
+func encodeNRGBA(w io.Writer, m *image.NRGBA, em *ImageWithHeader) error {
 	nplanes := 3
 	if !m.Opaque() {
 		nplanes = 4
@@ -205,7 +205,7 @@ func encodeNRGBA(w io.Writer, m *image.NRGBA, em *Image) error {
 // encodeGray writes m as the 8bpp single plane variant with no extended palette,
 // marked grayscale by the palette info byte. That is the same layout an 8bpp
 // paletted image uses, so the missing palette is what makes it grayscale.
-func encodeGray(w io.Writer, m *image.Gray, em *Image) error {
+func encodeGray(w io.Writer, m *image.Gray, em *ImageWithHeader) error {
 	b := m.Bounds()
 	odd := b.Dx() & 1
 	bytesPerLine := b.Dx() + odd
@@ -231,7 +231,7 @@ func encodeGray(w io.Writer, m *image.Gray, em *Image) error {
 	return nil
 }
 
-func encodePaletted(w io.Writer, m *image.Paletted, em *Image) error {
+func encodePaletted(w io.Writer, m *image.Paletted, em *ImageWithHeader) error {
 	if len(m.Palette) <= 16 {
 		return encodePaletted16Colors(w, m, em)
 	}
@@ -242,7 +242,7 @@ func encodePaletted(w io.Writer, m *image.Paletted, em *Image) error {
 // extended palette. It is the only paletted form that stores its colors verbatim, so
 // it also serves as the fallback for the small palettes the sub-8bpp variants cannot
 // represent faithfully.
-func encodePaletted8bpp(w io.Writer, m *image.Paletted, em *Image) error {
+func encodePaletted8bpp(w io.Writer, m *image.Paletted, em *ImageWithHeader) error {
 	b := m.Bounds()
 	odd := b.Dx() & 1
 	bytesPerLine := b.Dx() + odd
@@ -268,15 +268,15 @@ func encodePaletted8bpp(w io.Writer, m *image.Paletted, em *Image) error {
 	return writeExtendedPalette(w, m.Palette)
 }
 
-func encodePaletted16Colors(w io.Writer, m *image.Paletted, em *Image) error {
+func encodePaletted16Colors(w io.Writer, m *image.Paletted, em *ImageWithHeader) error {
 	b := m.Bounds()
 	if len(m.Palette) == 4 && b.Dx() == 320 && b.Dy() == 200 && isCGAPalette(m.Palette) {
-		// Write the PC Paintbrush 4.0 form: the background as a colour index in the high
+		// Write the PC Paintbrush 4.0 form: the background as a color index in the high
 		// nibble of the first entry's red byte, and the true CGA RGB for the remaining
 		// entries. The intensity has to survive in the values themselves, since the
 		// decoder recovers it from entry 1 being brighter than 200 — expanding the index
 		// bits to 0/255 instead would turn every dim palette into its bright twin. The
-		// colour burst palettes can't be expressed in this form at all.
+		// color burst palettes can't be expressed in this form at all.
 		palette := make([]color.Color, len(m.Palette))
 		for i, c := range m.Palette {
 			palette[i] = cga16ColorPalette[cgaPaletteIndex(c)]
@@ -347,7 +347,7 @@ func encodePaletted16Colors(w io.Writer, m *image.Paletted, em *Image) error {
 	return nil
 }
 
-func encodePalettedSinglePlane(w io.Writer, m *image.Paletted, em *Image, bpp int, palette color.Palette) error {
+func encodePalettedSinglePlane(w io.Writer, m *image.Paletted, em *ImageWithHeader, bpp int, palette color.Palette) error {
 	b := m.Bounds()
 	pixelsPerByte := 8 / bpp
 	bytesPerLine := (b.Dx() + pixelsPerByte - 1) / pixelsPerByte
@@ -391,7 +391,7 @@ func encodePalettedSinglePlane(w io.Writer, m *image.Paletted, em *Image, bpp in
 	return nil
 }
 
-func encodePalettedImage(w io.Writer, m image.PalettedImage, p color.Palette, em *Image) error {
+func encodePalettedImage(w io.Writer, m image.PalettedImage, p color.Palette, em *ImageWithHeader) error {
 	// TODO: implement all the functionality in encodePaletted
 	b := m.Bounds()
 	odd := b.Dx() & 1
@@ -414,7 +414,7 @@ func encodePalettedImage(w io.Writer, m image.PalettedImage, p color.Palette, em
 	return writeExtendedPalette(w, p)
 }
 
-func writeHeader(w io.Writer, bpp, nplanes, bytesPerLine int, bounds image.Rectangle, egaPalette color.Palette, em *Image, grayscale bool) error {
+func writeHeader(w io.Writer, bpp, nplanes, bytesPerLine int, bounds image.Rectangle, egaPalette color.Palette, em *ImageWithHeader, grayscale bool) error {
 	// PCX stores the origin, the inclusive maximum and the bytes per line as
 	// unsigned 16-bit values, so anything outside that range would silently
 	// truncate into a file that no reader can make sense of. These report a
@@ -474,7 +474,7 @@ func writeHeader(w io.Writer, bpp, nplanes, bytesPerLine int, bounds image.Recta
 		// The decoder uses this, together with the absence of an extended
 		// palette, to decide that the image is grayscale.
 		buf[68] = paletteInfoGrayscale
-	case em == nil || em.Paintbrush4:
+	case em == nil || em.PaletteInfoSet:
 		buf[68] = paletteInfoColor
 	default:
 		buf[68] = 0
