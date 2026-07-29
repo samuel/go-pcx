@@ -30,6 +30,12 @@ const (
 	paletteMagic = 0x0c
 )
 
+// Values for the palette info byte at header offset 68.
+const (
+	paletteInfoColor     = 1
+	paletteInfoGrayscale = 2
+)
+
 // maxPixels bounds the pixel count the decoder will allocate for. PCX
 // dimensions are 16-bit, so a 128-byte header can otherwise request
 // 65536*65536 pixels — 4GB as Gray, 17GB as RGBA.
@@ -49,7 +55,7 @@ type decoder struct {
 	nplanes          int
 	bytesPerLine     int
 	bytesPerScanline int
-	grayscale        bool
+	paletteInfo      int
 	pb4              bool
 	colorModel       color.Model
 }
@@ -189,9 +195,10 @@ func (d *decoder) readHeader() error {
 	// The number of bytes per line MUST be an even number.
 	d.bytesPerLine = int(buf[66]) | (int(buf[67]) << 8)
 	d.bytesPerScanline = d.bytesPerLine * d.nplanes
-	// grayscale is generally ignored entirely. It may just be for display and doesn't change the encoding.
-	// I have yet to see a file in the wild that has this set to grayscale.
-	d.grayscale = d.version < 5 && buf[68] == 2 // Grayscale flag ignored by PB IV/ IV +
+	// A paletteInfo of 2 marks the image as grayscale. It doesn't change the encoding,
+	// so it only matters for the 8bpp single plane variant, where it distinguishes a
+	// grayscale image from one whose palette is missing. PB IV/IV+ ignore it entirely.
+	d.paletteInfo = int(buf[68])
 	d.pb4 = buf[68] != 0
 	// horizontal and vertical screen size in pixels are found only in PB IV/IV Plus
 	d.horizScreenSize = int(buf[70]) | (int(buf[71]) << 8)
@@ -211,11 +218,7 @@ func (d *decoder) readHeader() error {
 		return FormatError(fmt.Sprintf("image too large %d x %d", d.bounds.Dx(), d.bounds.Dy()))
 	}
 
-	if d.grayscale {
-		d.colorModel = color.GrayModel
-	} else {
-		d.colorModel = color.RGBAModel
-	}
+	d.colorModel = color.RGBAModel
 
 	return nil
 }
@@ -228,14 +231,9 @@ func (d *decoder) decode() (image.Image, error) {
 	bufR := bufio.NewReader(d.r)
 
 	switch {
-	case d.colorModel == color.GrayModel:
-		if d.bpp == 8 {
-			return d.decodeGrayscale(bufR)
-		}
-		return nil, UnsupportedError("grayscale only supported with 8bpp")
 	case d.nplanes == 1:
 		if d.bpp == 8 {
-			return d.decodeRGBPaletted(bufR)
+			return d.decode8bpp1plane(bufR)
 		}
 		return d.decodePaletted(bufR)
 	case d.bpp == 8 && (d.nplanes == 3 || d.nplanes == 4):
@@ -247,17 +245,62 @@ func (d *decoder) decode() (image.Image, error) {
 	return nil, UnsupportedError(fmt.Sprintf("version %d with %d planes %d bpp", d.version, d.nplanes, d.bpp))
 }
 
-func (d *decoder) decodeGrayscale(bufR *bufio.Reader) (image.Image, error) {
-	img := image.NewGray(d.bounds)
-	width, height := d.bounds.Dx(), d.bounds.Dy()
-	pad := d.bytesPerScanline - width
-	for y := range height {
-		off := y * img.Stride
-		if err := rleDecode(bufR, img.Pix[off:off+width], pad); err != nil {
-			return img, err
+// decode8bpp1plane decodes the 8 bits per pixel, single plane variant. The pixel
+// data is byte for byte identical whether the file is paletted or grayscale, so the
+// concrete image type is decided afterwards by whether the file actually carries a
+// trailing extended palette rather than by the header's version or palette info.
+func (d *decoder) decode8bpp1plane(bufR *bufio.Reader) (image.Image, error) {
+	w, h := d.bounds.Dx(), d.bounds.Dy()
+	pix := make([]byte, w*h)
+	pad := d.bytesPerScanline - w
+	for y := range h {
+		if err := rleDecode(bufR, pix[y*w:(y+1)*w], pad); err != nil {
+			return nil, err
 		}
 	}
-	return img, nil
+
+	pal, err := d.readExtendedPalette(bufR)
+	if err != nil {
+		return nil, err
+	}
+	// image.Gray and image.Paletted share the same 1-byte-per-pixel layout,
+	// so pix can back either without a second allocation.
+	if pal == nil {
+		if d.paletteInfo != paletteInfoGrayscale {
+			return nil, FormatError("missing extended palette")
+		}
+		// Grayscale: the pixel value is the intensity, so no palette is needed.
+		return &image.Gray{Pix: pix, Stride: w, Rect: d.bounds}, nil
+	}
+	return &image.Paletted{Pix: pix, Stride: w, Rect: d.bounds, Palette: pal}, nil
+}
+
+// readExtendedPalette reads the 768 byte palette that 8 bits per pixel files carry
+// after the pixel data, introduced by a paletteMagic byte. It returns a nil palette
+// and no error when the file carries no palette at all, leaving it to the caller to
+// decide whether that means grayscale or a malformed file.
+func (d *decoder) readExtendedPalette(bufR *bufio.Reader) (color.Palette, error) {
+	switch by, err := bufR.ReadByte(); {
+	case errors.Is(err, io.EOF):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case by != paletteMagic:
+		return nil, nil
+	}
+
+	var palBytes [3 * 256]byte
+	if _, err := io.ReadFull(bufR, palBytes[:]); err != nil {
+		if errors.Is(err, io.EOF) {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, err
+	}
+	pal := make(color.Palette, 256)
+	for i := range pal {
+		pal[i] = color.RGBA{R: palBytes[i*3], G: palBytes[i*3+1], B: palBytes[i*3+2], A: 255}
+	}
+	return pal, nil
 }
 
 func (d *decoder) decodeRGB(bufR *bufio.Reader) (image.Image, error) {
@@ -282,36 +325,6 @@ func (d *decoder) decodeRGB(bufR *bufio.Reader) (image.Image, error) {
 			offset += 4
 		}
 	}
-	return img, nil
-}
-
-func (d *decoder) decodeRGBPaletted(bufR *bufio.Reader) (image.Image, error) {
-	pal := make([]color.Color, 256)
-	img := image.NewPaletted(d.bounds, pal)
-	width, height := d.bounds.Dx(), d.bounds.Dy()
-	pad := d.bytesPerScanline - width
-	for y := range height {
-		off := y * img.Stride
-		if err := rleDecode(bufR, img.Pix[off:off+width], pad); err != nil {
-			return img, err
-		}
-	}
-
-	// Read palette
-	palBytes := make([]byte, 3*256)
-	switch by, err := bufR.ReadByte(); {
-	case (err == nil && by != paletteMagic) || err == io.EOF:
-		return img, errors.New("pcx: missing extended palette")
-	case err != nil:
-		return img, err
-	}
-	if _, err := io.ReadFull(bufR, palBytes); err != nil {
-		return img, err
-	}
-	for i := range 256 {
-		pal[i] = color.RGBA{R: palBytes[i*3], G: palBytes[i*3+1], B: palBytes[i*3+2], A: 255}
-	}
-
 	return img, nil
 }
 

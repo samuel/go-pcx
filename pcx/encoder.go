@@ -16,6 +16,8 @@ func Encode(w io.Writer, m image.Image) error {
 	switch im := m.(type) {
 	case *image.RGBA:
 		return encodeRGBA(w, im, em)
+	case *image.Gray:
+		return encodeGray(w, im, em)
 	case *image.Paletted:
 		return encodePaletted(w, im, em)
 	case image.PalettedImage:
@@ -31,7 +33,7 @@ func encodeGeneric(w io.Writer, m image.Image, em *Image) error {
 	b := m.Bounds()
 	odd := b.Dx() & 1
 	bytesPerLine := b.Dx() + odd
-	if err := writeHeader(w, 8, 3, bytesPerLine, b, nil, em); err != nil {
+	if err := writeHeader(w, 8, 3, bytesPerLine, b, nil, em, false); err != nil {
 		return err
 	}
 	rline := newRLEEncoder(bytesPerLine)
@@ -66,7 +68,7 @@ func encodeRGBA(w io.Writer, m *image.RGBA, em *Image) error {
 	b := m.Bounds()
 	odd := b.Dx() & 1
 	bytesPerLine := b.Dx() + odd
-	if err := writeHeader(w, 8, 3, bytesPerLine, b, nil, em); err != nil {
+	if err := writeHeader(w, 8, 3, bytesPerLine, b, nil, em, false); err != nil {
 		return err
 	}
 	width := b.Dx()
@@ -100,6 +102,35 @@ func encodeRGBA(w io.Writer, m *image.RGBA, em *Image) error {
 	return nil
 }
 
+// encodeGray writes m as the 8bpp single plane variant with no extended palette,
+// marked grayscale by the palette info byte. That is the same layout an 8bpp
+// paletted image uses, so the missing palette is what makes it grayscale.
+func encodeGray(w io.Writer, m *image.Gray, em *Image) error {
+	b := m.Bounds()
+	odd := b.Dx() & 1
+	bytesPerLine := b.Dx() + odd
+	if err := writeHeader(w, 8, 1, bytesPerLine, b, nil, em, true); err != nil {
+		return err
+	}
+	width := b.Dx()
+	height := b.Dy()
+	line := newRLEEncoder(bytesPerLine)
+	for y := range height {
+		o := y * m.Stride
+		for range width {
+			line.put(m.Pix[o])
+			o++
+		}
+		if odd != 0 {
+			line.put(0)
+		}
+		if _, err := w.Write(line.flush()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func encodePaletted(w io.Writer, m *image.Paletted, em *Image) error {
 	if len(m.Palette) <= 16 {
 		return encodePaletted16Colors(w, m, em)
@@ -108,7 +139,7 @@ func encodePaletted(w io.Writer, m *image.Paletted, em *Image) error {
 	b := m.Bounds()
 	odd := b.Dx() & 1
 	bytesPerLine := b.Dx() + odd
-	if err := writeHeader(w, 8, 1, bytesPerLine, b, m.Palette, em); err != nil {
+	if err := writeHeader(w, 8, 1, bytesPerLine, b, m.Palette, em, false); err != nil {
 		return err
 	}
 	width := b.Dx()
@@ -163,7 +194,7 @@ func encodePaletted16Colors(w io.Writer, m *image.Paletted, em *Image) error {
 	}
 	odd := b.Dx() & 1
 	bytesPerLine := (b.Dx() + odd + 7) / 8
-	if err := writeHeader(w, bpp, nPlanes, bytesPerLine, b, m.Palette, em); err != nil {
+	if err := writeHeader(w, bpp, nPlanes, bytesPerLine, b, m.Palette, em, false); err != nil {
 		return err
 	}
 	width := b.Dx()
@@ -204,7 +235,7 @@ func encodePalettedSinglePlane(w io.Writer, m *image.Paletted, em *Image, bpp in
 	// The number of bytes per line must be even.
 	extraBytes := bytesPerLine & 1
 	bytesPerLine += extraBytes
-	if err := writeHeader(w, bpp, 1, bytesPerLine, b, palette, em); err != nil {
+	if err := writeHeader(w, bpp, 1, bytesPerLine, b, palette, em, false); err != nil {
 		return err
 	}
 	width := b.Dx()
@@ -246,7 +277,7 @@ func encodePalettedImage(w io.Writer, m image.PalettedImage, p color.Palette, em
 	b := m.Bounds()
 	odd := b.Dx() & 1
 	bytesPerLine := b.Dx() + odd
-	if err := writeHeader(w, 8, 1, bytesPerLine, b, p, em); err != nil {
+	if err := writeHeader(w, 8, 1, bytesPerLine, b, p, em, false); err != nil {
 		return err
 	}
 	line := newRLEEncoder(bytesPerLine)
@@ -264,7 +295,7 @@ func encodePalettedImage(w io.Writer, m image.PalettedImage, p color.Palette, em
 	return writeExtendedPalette(w, p)
 }
 
-func writeHeader(w io.Writer, bpp, nplanes, bytesPerLine int, bounds image.Rectangle, egaPalette color.Palette, em *Image) error {
+func writeHeader(w io.Writer, bpp, nplanes, bytesPerLine int, bounds image.Rectangle, egaPalette color.Palette, em *Image, grayscale bool) error {
 	// PCX stores the origin, the inclusive maximum and the bytes per line as
 	// unsigned 16-bit values, so anything outside that range would silently
 	// truncate into a file that no reader can make sense of. These report a
@@ -319,9 +350,14 @@ func writeHeader(w io.Writer, bpp, nplanes, bytesPerLine int, bounds image.Recta
 	buf[66] = byte(bytesPerLine & 0xff)
 	buf[67] = byte(bytesPerLine >> 8)
 	// PB4/Color/Gray
-	if em == nil || em.Paintbrush4 {
-		buf[68] = 1
-	} else {
+	switch {
+	case grayscale:
+		// The decoder uses this, together with the absence of an extended
+		// palette, to decide that the image is grayscale.
+		buf[68] = paletteInfoGrayscale
+	case em == nil || em.Paintbrush4:
+		buf[68] = paletteInfoColor
+	default:
 		buf[68] = 0
 	}
 	if em != nil {

@@ -1,0 +1,62 @@
+Provenance of the 8bpp grayscale fixtures: gray8.pcx, gray8_nopal.pcx, gray8.png
+
+Both PCX files were produced by third-party tools, not by this package's encoder, so
+they are usable as independent evidence that the decoder is right.
+
+Why they are synthetic rather than files found in the wild:
+
+  The PCX header has a "palette info" byte at offset 68 where 1 means color/BW and 2
+  means grayscale. In practice nothing sets it to 2. Per the Encyclopedia of Graphics
+  File Formats, the field "was never really used by ZSoft" and PC Paintbrush IV / IV
+  Plus simply ignore it, because a grayscale image already round-trips perfectly as an
+  ordinary 8bpp paletted image whose palette happens to be a gray ramp.
+
+  This was checked against four independent encoders. Given 8-bit grayscale input,
+  ffmpeg, Pillow, netpbm's ppmtopcx and ImageMagick all write 8bpp / 1 plane with a
+  gray ramp in the trailing extended palette; none writes palette info 2. ffmpeg
+  writes 0 there, the other three write 1.
+
+  The one grayscale PCX that was available from a third-party archive,
+  gmarbles.pcx from netghost.narod.ru/gff/sample/images/pcx/, is unusable: it is
+  truncated. A strict per-row RLE decode runs out of data on row 997 of 1001, and
+  decoding its whole body as one continuous RLE stream (ignoring scanline framing
+  altogether) still hits EOF before filling the image. ImageMagick independently
+  rejects it with "unexpected end-of-file".
+
+How they were generated:
+
+  # Source image: a vertical gradient for long RLE runs, plus seeded Gaussian noise
+  # for literals and for bytes >= 0xc0 (the RLE run marker). 71 is odd on purpose, so
+  # BytesPerLine (72) exceeds the width and the scanline padding path is exercised.
+  magick -size 71x53 gradient:black-white -colorspace Gray \
+      -seed 42 -attenuate 0.7 +noise Gaussian -depth 8 gray8.png
+
+  # gray8.pcx: the real-world form. ffmpeg was chosen over the other three encoders
+  # because it is the only one that pads BytesPerLine to an even number as the format
+  # requires; ppmtopcx and ImageMagick both emit an odd 71 here.
+  ffmpeg -i gray8.png -pix_fmt gray gray8.pcx
+
+  # gray8_nopal.pcx: the palette-info form, which no encoder will produce. Derived
+  # from gray8.pcx by removing the trailing 769-byte extended palette and setting
+  # byte 68 to 2. The header and the RLE body are otherwise ffmpeg's, untouched.
+  python3 -c "
+  b = bytearray(open('gray8.pcx','rb').read())
+  assert b[-769] == 0x0c
+  b = b[:-769]
+  b[68] = 2
+  open('gray8_nopal.pcx','wb').write(bytes(b))"
+
+gray8.png is the ground truth for pixel content. gray_test.go decodes both PCX files
+and compares every pixel against it, so a decoding regression shows up as a pixel
+mismatch rather than only as an error. ImageMagick, Pillow, netpbm and ffmpeg were all
+verified to agree with it before gray8.pcx was picked.
+
+Expected decoder behavior:
+
+  gray8.pcx        -> *image.Paletted, 256 gray ramp entries (palette is present, so
+                      the palette info byte is irrelevant)
+  gray8_nopal.pcx  -> *image.Gray (no palette, palette info 2)
+
+Removing the palette from gray8.pcx *without* setting byte 68 to 2 must stay an error
+("missing extended palette"), which is what distinguishes a grayscale file from one
+whose palette is simply missing.
