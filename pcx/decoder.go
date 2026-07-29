@@ -64,12 +64,33 @@ type decoder struct {
 	palette color.Palette
 }
 
+// Image is a decoded PCX image together with the header metadata that the
+// image/color types have nowhere to keep. DecodeExtended returns one, and passing
+// one back to Encode is the only way to steer those header fields: Encode unwraps
+// the embedded image and writes the metadata below into the header it generates.
+// The pixel data always comes from Image, so any image.Image can be wrapped in one
+// to control the header it is written with.
 type Image struct {
+	// Image is the decoded image itself, one of the types Decode documents.
 	image.Image
 
-	Version                         int
-	Paintbrush4                     bool
-	HorizDPI, VertDPI               int
+	// Version is the PCX version byte: 0 for PC Paintbrush 2.5, 2 for 2.8 with a
+	// palette, 3 for 2.8 without one, 4 for PC Paintbrush for Windows and 5 for
+	// 3.0 and later. Encode writes 5 for a value outside that range, which is what
+	// every variant this package emits is compatible with.
+	Version int
+	// Paintbrush4 reports whether the palette info byte is set, which PC Paintbrush
+	// 3.0 and later do on every color file. It says nothing about the image's
+	// encoding — in particular it does not identify a CGA file. On encode it selects
+	// between a palette info byte of 1 and 0, except for a grayscale image, which
+	// must write 2.
+	Paintbrush4 bool
+	// HorizDPI and VertDPI are the intended resolution in dots per inch. Writers
+	// disagree about these: some store the screen resolution instead, and 0 is
+	// common. Nothing in this package interprets them.
+	HorizDPI, VertDPI int
+	// HorizScreenSize and VertScreenSize are the source screen dimensions in
+	// pixels, written only by PC Paintbrush IV and IV Plus and 0 everywhere else.
 	HorizScreenSize, VertScreenSize int
 }
 
@@ -92,10 +113,21 @@ func init() {
 	image.RegisterFormat("pcx", "\x0a?\x01", Decode, DecodeConfig)
 }
 
-// Decode reads a PCX image from r and returns it as an image.Image.
-// The type of Image returned depends on the PCX contents. The possible
-// image types are returned are defined in the stdlib image package. Use
-// DecodeExtended to preserve more information such as DPI.
+// Decode reads a PCX image from r and returns it as an image.Image. The concrete
+// type depends on the variant the file uses, and is always one from the standard
+// library's image package:
+//
+//   - 8 bits per pixel, 1 plane: *image.Paletted, or *image.Gray for a file that
+//     carries no palette and is marked grayscale
+//   - fewer than 8 bits per pixel, 1 plane: *image.Paletted, with the palette from
+//     the header colormap (monochrome, CGA or EGA)
+//   - 1 bit per pixel, 2 to 4 planes: *image.Paletted
+//   - 8 bits per pixel, 3 planes: *image.RGBA, always fully opaque
+//   - 8 bits per pixel, 4 planes: *image.NRGBA, since the fourth plane holds
+//     straight rather than premultiplied alpha
+//
+// Anything else is an UnsupportedError. Use DecodeExtended to also get the header
+// metadata, such as DPI.
 func Decode(r io.Reader) (image.Image, error) {
 	d, err := newDecoder(r)
 	if err != nil {

@@ -47,30 +47,13 @@ func TestEncoder(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			// Make sure we can decode the new image. The encoded header itself is
+			// checked by TestEncodeHeader, over synthetic images whose expected
+			// variant is known; here only the decoded result matters.
 			outBytes := buf.Bytes()
-			// Ignore some unused values in the comparison
-			inBytes[64] = 0
-			inBytes[68] = outBytes[68] & 3
-			inBytes[69] = 0
-			for i := 74; i < 128; i++ {
-				inBytes[i] = 0
-			}
-			if inBytes[3] == 8 && inBytes[65] == 1 {
-				// if bpp == 8 and nplanes == 1 then ignore the EGA palette
-				for i := 16; i < 16+48; i++ {
-					inBytes[i] = outBytes[i]
-				}
-			} else if inBytes[3] == 2 && inBytes[65] == 1 {
-				// Ignore unused colors
-				for i := 16 + 3*4; i < 16+48; i++ {
-					inBytes[i] = outBytes[i]
-				}
-			}
-
-			// Make sure we can decode the new image.
 			img2, err := Decode(buf)
 			if err != nil {
-				m, _ := newDecoder(bytes.NewReader(inBytes))
+				m, _ := newDecoder(bytes.NewReader(outBytes))
 				t.Logf("Output: %+#v", m)
 				t.Fatalf("Failed to decode after encode: %s", err)
 			}

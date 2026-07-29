@@ -7,7 +7,32 @@ import (
 	"io"
 )
 
-// Encode writes the Image m to w in PCX format.
+// Encode writes the image m to w in PCX format. The variant is chosen from m's
+// concrete type and contents:
+//
+//   - *image.Gray: 8 bits per pixel, 1 plane, no palette, marked grayscale
+//   - *image.Paletted with more than 16 colors: 8 bits per pixel, 1 plane, with the
+//     palette after the pixel data
+//   - *image.Paletted with 16 or fewer: the smallest sub-8bpp variant that can still
+//     hold the palette's colors — monochrome, CGA, 2 bits per pixel, or 1 bit per
+//     pixel across 3 or 4 planes
+//   - *image.RGBA, *image.NRGBA and anything else: 8 bits per pixel over 3 planes,
+//     or 4 planes when the image is not fully opaque
+//
+// Three conversions are not exact, and a round trip through Decode shows them:
+//
+//   - A palette of fewer than 16 colors is written to a variant that holds a power of
+//     two of them, so the colors survive but the palette length rounds up. The
+//     monochrome variant stores no colors at all and is used only for a palette that
+//     is black and white; a CGA color burst palette cannot be written back at all.
+//   - PCX stores straight alpha, so a translucent *image.RGBA is un-premultiplied on
+//     the way out and decodes as an *image.NRGBA. An opaque *image.NRGBA loses its
+//     alpha plane and decodes as an *image.RGBA. Both preserve every value.
+//   - Samples wider than 8 bits are truncated to the 8 bits per channel PCX stores.
+//
+// Passing a *Image steers the header metadata; see Image. An image whose bounds PCX
+// cannot represent — empty, negative origin, or beyond 65536 in either direction — is
+// rejected with a plain error, and nothing is written to w.
 func Encode(w io.Writer, m image.Image) error {
 	em, ok := m.(*Image)
 	if ok {

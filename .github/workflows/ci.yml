@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+
+      - name: gofmt
+        # gofmt -l lists files that need formatting and exits 0 either way.
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then
+            echo "not gofmt'd:"
+            echo "$files"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      # Go keeps the inputs a fuzzing run discovers under $GOCACHE/fuzz, separate from
+      # the seeds committed in pcx/testdata/fuzz. Carrying that directory between runs
+      # is what makes a 60s budget cumulative rather than 60 seconds from the seeds
+      # every time.
+      - name: Locate the fuzzing corpus
+        id: fuzz-corpus
+        run: echo "dir=$(go env GOCACHE)/fuzz" >> "$GITHUB_OUTPUT"
+
+      - name: Restore fuzzing corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.fuzz-corpus.outputs.dir }}
+          # A cache entry is immutable once written, so the key has to be unique per
+          # run and the prefix match is what finds the newest previous corpus. A
+          # single fixed key would freeze the corpus at whatever the first run found.
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+
+      - name: Fuzz
+        # The decoder is registered with image.RegisterFormat, so it sees whatever
+        # bytes a program hands to image.Decode. A short fuzzing run on every change
+        # is the only test that covers headers no fixture describes.
+        run: go test -run=Fuzz -fuzz=FuzzDecodeEncode -fuzztime=60s ./pcx/
+
+      # Only main writes the corpus back. A pull request's cache is scoped to that PR
+      # and evicted with it, so saving from one costs a cache entry and helps nothing;
+      # reading main's corpus (which the prefix match above does) is the useful half.
+      - name: Save fuzzing corpus
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.fuzz-corpus.outputs.dir }}
+          key: fuzz-corpus-${{ github.run_id }}
+
+      # A failing input is written into the repo's testdata/fuzz directory, where it
+      # would otherwise be discarded with the runner. Uploading it is the only way to
+      # get the reproducer off the machine.
+      - name: Upload fuzzing failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failures
+          path: pcx/testdata/fuzz/
+          if-no-files-found: ignore
