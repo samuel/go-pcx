@@ -47,8 +47,14 @@ func (r *rleEncoder) flush() []byte {
 	return b
 }
 
-func rleDecode(bufR *bufio.Reader, out []byte, count int) error {
-	for off := 0; off < count; {
+// rleDecode decodes one scanline of len(out)+pad bytes of RLE data from bufR,
+// storing the first len(out) of them in out and discarding the remaining pad
+// bytes of scanline padding. Runs never cross a scanline boundary, so a run
+// that would decode past the end of the scanline is an error rather than
+// something to clamp.
+func rleDecode(bufR *bufio.Reader, out []byte, pad int) error {
+	total := len(out) + pad
+	for off := 0; off < total; {
 		val, err := bufR.ReadByte()
 		if err != nil {
 			return err
@@ -62,7 +68,7 @@ func rleDecode(bufR *bufio.Reader, out []byte, count int) error {
 			}
 		}
 		for range run {
-			if off >= count {
+			if off >= total {
 				return errors.New("pcx: RLE overrun")
 			}
 			if off < len(out) {

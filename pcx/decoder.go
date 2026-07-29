@@ -30,6 +30,11 @@ const (
 	paletteMagic = 0x0c
 )
 
+// maxPixels bounds the pixel count the decoder will allocate for. PCX
+// dimensions are 16-bit, so a 128-byte header can otherwise request
+// 65536*65536 pixels — 4GB as Gray, 17GB as RGBA.
+const maxPixels = 1 << 28
+
 type decoder struct {
 	r                io.Reader
 	version          int
@@ -161,19 +166,26 @@ func (d *decoder) readHeader() error {
 	d.version = int(buf[1])
 	d.rle = buf[2] == 1
 	d.bpp = int(buf[3])
-	if d.bpp < 1 || d.bpp > 8 {
+	switch d.bpp {
+	case 1, 2, 4, 8:
+	default:
 		return FormatError(fmt.Sprintf("unsupported bpp (%d)", d.bpp))
 	}
 	d.bounds = image.Rect(
 		int(buf[4])|(int(buf[5])<<8),
 		int(buf[6])|(int(buf[7])<<8),
-		int(buf[8])|(int(buf[9])<<8)+1,
-		int(buf[10])|(int(buf[11])<<8)+1)
+		(int(buf[8])|(int(buf[9])<<8))+1,
+		(int(buf[10])|(int(buf[11])<<8))+1)
 	d.horizDPI = int(buf[12]) | (int(buf[13]) << 8)
 	d.vertDPI = int(buf[14]) | (int(buf[15]) << 8)
 	copy(d.colormap[:48], buf[16:16+48])
 	// Byte 64 is reserved and should be set to 0
 	d.nplanes = int(buf[65])
+	if d.nplanes == 0 {
+		// The upper bound is left to decode() so that unimplemented plane
+		// counts keep reporting UnsupportedError rather than FormatError.
+		return FormatError("no planes")
+	}
 	// The number of bytes per line MUST be an even number.
 	d.bytesPerLine = int(buf[66]) | (int(buf[67]) << 8)
 	d.bytesPerScanline = d.bytesPerLine * d.nplanes
@@ -186,18 +198,23 @@ func (d *decoder) readHeader() error {
 	d.vertScreenSize = int(buf[72]) | (int(buf[73]) << 8)
 	// The rest of the 54 bytes should be all set to 0
 
+	if d.bounds.Dx() <= 0 || d.bounds.Dy() <= 0 {
+		return FormatError(fmt.Sprintf("invalid image dimensions %d x %d", d.bounds.Dx(), d.bounds.Dy()))
+	}
+
 	if d.bytesPerScanline < (d.bounds.Dx()*d.bpp*d.nplanes+7)/8 {
 		return FormatError("corrupt image")
+	}
+
+	// Computed in 64-bit so the product can't wrap on 32-bit builds.
+	if int64(d.bounds.Dx())*int64(d.bounds.Dy()) > maxPixels {
+		return FormatError(fmt.Sprintf("image too large %d x %d", d.bounds.Dx(), d.bounds.Dy()))
 	}
 
 	if d.grayscale {
 		d.colorModel = color.GrayModel
 	} else {
 		d.colorModel = color.RGBAModel
-	}
-
-	if d.bounds.Dx() <= 0 || d.bounds.Dy() <= 0 {
-		return FormatError(fmt.Sprintf("invalid image dimensions %d x %d", d.bounds.Dx(), d.bounds.Dy()))
 	}
 
 	return nil
@@ -232,9 +249,11 @@ func (d *decoder) decode() (image.Image, error) {
 
 func (d *decoder) decodeGrayscale(bufR *bufio.Reader) (image.Image, error) {
 	img := image.NewGray(d.bounds)
-	height := d.bounds.Dy()
+	width, height := d.bounds.Dx(), d.bounds.Dy()
+	pad := d.bytesPerScanline - width
 	for y := range height {
-		if err := rleDecode(bufR, img.Pix[y*img.Stride:], d.bytesPerScanline); err != nil {
+		off := y * img.Stride
+		if err := rleDecode(bufR, img.Pix[off:off+width], pad); err != nil {
 			return img, err
 		}
 	}
@@ -248,7 +267,7 @@ func (d *decoder) decodeRGB(bufR *bufio.Reader) (image.Image, error) {
 	offset := 0
 	buf := make([]byte, d.bytesPerScanline)
 	for range height {
-		if err := rleDecode(bufR, buf, d.bytesPerScanline); err != nil {
+		if err := rleDecode(bufR, buf, 0); err != nil {
 			return img, err
 		}
 		for x := range width {
@@ -269,9 +288,11 @@ func (d *decoder) decodeRGB(bufR *bufio.Reader) (image.Image, error) {
 func (d *decoder) decodeRGBPaletted(bufR *bufio.Reader) (image.Image, error) {
 	pal := make([]color.Color, 256)
 	img := image.NewPaletted(d.bounds, pal)
-	height := d.bounds.Dy()
+	width, height := d.bounds.Dx(), d.bounds.Dy()
+	pad := d.bytesPerScanline - width
 	for y := range height {
-		if err := rleDecode(bufR, img.Pix[y*img.Stride:], d.bytesPerScanline); err != nil {
+		off := y * img.Stride
+		if err := rleDecode(bufR, img.Pix[off:off+width], pad); err != nil {
 			return img, err
 		}
 	}
@@ -344,7 +365,7 @@ func (d *decoder) decodePaletted(bufR *bufio.Reader) (image.Image, error) {
 	buf := make([]byte, d.bytesPerScanline)
 	mask := byte((1 << uint(d.bpp)) - 1)
 	for y := range height {
-		if err := rleDecode(bufR, buf, d.bytesPerScanline); err != nil {
+		if err := rleDecode(bufR, buf, 0); err != nil {
 			return img, err
 		}
 		shift := byte(8 - d.bpp)
@@ -373,7 +394,7 @@ func (d *decoder) decodePlanar(bufR *bufio.Reader) (image.Image, error) {
 	height := d.bounds.Dy()
 	buf := make([]byte, d.bytesPerScanline)
 	for y := range height {
-		if err := rleDecode(bufR, buf, d.bytesPerScanline); err != nil {
+		if err := rleDecode(bufR, buf, 0); err != nil {
 			return nil, err
 		}
 		for x := range width {
