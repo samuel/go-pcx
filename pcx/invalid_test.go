@@ -40,21 +40,21 @@ func TestDecodeMalformedHeader(t *testing.T) {
 		// header is true when the failure must come from the header read, so that
 		// DecodeConfig rejects the file too and no pixel buffer is ever allocated.
 		header bool
-		want   error
+		want   errCheck
 	}{{
 		// nplanes 0 also defeated the geometry check, since it made both sides of
 		// that comparison 0.
 		name:   "no planes",
 		mutate: func(b []byte) []byte { b[65] = 0; return b },
 		header: true,
-		want:   FormatError(""),
+		want:   isFormatError,
 	}, {
 		// A bpp the format never defines used to run the pixel loop with a byte
 		// shift that underflowed, producing garbage rather than an error.
 		name:   "bpp 3",
 		mutate: func(b []byte) []byte { b[3] = 3; return b },
 		header: true,
-		want:   FormatError(""),
+		want:   isFormatError,
 	}, {
 		// 65535x65535 fits in the 16-bit header fields but is 4GB as a single plane.
 		name: "over the pixel ceiling",
@@ -65,7 +65,7 @@ func TestDecodeMalformedHeader(t *testing.T) {
 			return b
 		},
 		header: true,
-		want:   FormatError(""),
+		want:   isFormatError,
 	}, {
 		// An inclusive maximum one below the origin is an empty image.
 		name: "zero width",
@@ -75,30 +75,30 @@ func TestDecodeMalformedHeader(t *testing.T) {
 			return b
 		},
 		header: true,
-		want:   FormatError(""),
+		want:   isFormatError,
 	}, {
 		// Too few bytes per line to hold a row of pixels.
 		name:   "bytes per line too small",
 		mutate: func(b []byte) []byte { put16(b, 66, 2); return b },
 		header: true,
-		want:   FormatError(""),
+		want:   isFormatError,
 	}, {
 		// A plane count that is valid in the format but unimplemented here has to
 		// stay an UnsupportedError rather than becoming a FormatError.
 		name:   "five planes",
 		mutate: func(b []byte) []byte { b[65] = 5; return b },
-		want:   UnsupportedError(""),
+		want:   isUnsupportedError,
 	}, {
 		// A body that stops mid-scanline is truncated, never a clean end of input.
 		name:   "truncated body",
 		mutate: func(b []byte) []byte { return b[:200] },
-		want:   io.ErrUnexpectedEOF,
+		want:   wraps(io.ErrUnexpectedEOF),
 	}, {
 		// An 8bpp single plane file with neither a trailing palette nor the
 		// grayscale marker has no colors at all.
 		name:   "missing extended palette",
 		mutate: func(b []byte) []byte { return b[:len(b)-769] },
-		want:   FormatError(""),
+		want:   isFormatError,
 	}, {
 		// The same file marked grayscale is not an error: the pixel value is the
 		// intensity. This is the tripwire for the check above being too eager.
@@ -107,7 +107,7 @@ func TestDecodeMalformedHeader(t *testing.T) {
 			b[68] = paletteInfoGrayscale
 			return b[:len(b)-769]
 		},
-		want: nil,
+		want: noError,
 	}, {
 		// A palette that is present but cut short stays a hard error even when the
 		// grayscale marker would otherwise excuse an absent one.
@@ -116,15 +116,15 @@ func TestDecodeMalformedHeader(t *testing.T) {
 			b[68] = paletteInfoGrayscale
 			return b[:len(b)-8]
 		},
-		want: io.ErrUnexpectedEOF,
+		want: wraps(io.ErrUnexpectedEOF),
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			b := tc.mutate(fixtureBytes(t, "vball.pcx"))
 
 			img, err := Decode(bytes.NewReader(b))
-			checkErrorKind(t, "Decode", err, tc.want)
-			if tc.want != nil && img != nil {
+			tc.want.check(t, "Decode", err)
+			if err != nil && img != nil {
 				// A failed decode must not hand back a partially filled image.
 				t.Errorf("Decode returned a %T alongside its error", img)
 			}
@@ -135,34 +135,47 @@ func TestDecodeMalformedHeader(t *testing.T) {
 			// describes a file Decode refuses and so that the dimensions in a
 			// hostile header are never used to allocate anything.
 			_, err = DecodeConfig(bytes.NewReader(b))
-			checkErrorKind(t, "DecodeConfig", err, tc.want)
+			tc.want.check(t, "DecodeConfig", err)
 		})
 	}
 }
 
-// checkErrorKind compares err against want by kind: the typed errors by type, since
-// their messages are not part of the contract, and everything else with errors.Is.
-func checkErrorKind(t *testing.T, what string, err, want error) {
+// errCheck is what a malformed input is required to produce. It matches by kind
+// rather than by message, since the message text is not part of the contract, and it
+// is a predicate rather than a sentinel value so that neither the table nor this
+// helper has to switch on an error's dynamic type — a test that did would itself be
+// wrong about wrapped errors, which is exactly what it is here to police.
+type errCheck struct {
+	desc  string
+	match func(error) bool
+}
+
+// check fails the test unless err is the kind of error c describes.
+func (c errCheck) check(t *testing.T, what string, err error) {
 	t.Helper()
-	switch want := want.(type) {
-	case nil:
-		if err != nil {
-			t.Errorf("%s: %s", what, err)
-		}
-	case FormatError:
-		var got FormatError
-		if !errors.As(err, &got) {
-			t.Errorf("%s: err is %v (%T), expected a FormatError", what, err, err)
-		}
-	case UnsupportedError:
-		var got UnsupportedError
-		if !errors.As(err, &got) {
-			t.Errorf("%s: err is %v (%T), expected an UnsupportedError", what, err, err)
-		}
-	default:
-		if !errors.Is(err, want) {
-			t.Errorf("%s: err is %v (%T), expected %v", what, err, err, want)
-		}
+	if !c.match(err) {
+		t.Errorf("%s: err is %v (%T), expected %s", what, err, err, c.desc)
+	}
+}
+
+var (
+	noError = errCheck{"no error", func(err error) bool { return err == nil }}
+	// The typed errors describe an input file, and are matched by type.
+	isFormatError = errCheck{"a FormatError", func(err error) bool {
+		var e FormatError
+		return errors.As(err, &e)
+	}}
+	isUnsupportedError = errCheck{"an UnsupportedError", func(err error) bool {
+		var e UnsupportedError
+		return errors.As(err, &e)
+	}}
+)
+
+// wraps matches any error that unwraps to target.
+func wraps(target error) errCheck {
+	return errCheck{
+		desc:  target.Error(),
+		match: func(err error) bool { return errors.Is(err, target) },
 	}
 }
 

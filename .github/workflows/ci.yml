@@ -35,6 +35,19 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: golangci-lint
+        # The version is pinned so that a golangci-lint release cannot fail a build
+        # that has not changed; .golangci.yml pins the linter set for the same reason.
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+
+      - name: Formatting
+        # The step above only runs the linters. This checks the formatters the config
+        # enables — gofmt plus goimports, so import grouping is covered too, which the
+        # gofmt step alone cannot see. It uses the binary the action just installed.
+        run: golangci-lint fmt --diff ./...
+
       - name: Test
         run: go test ./...
 

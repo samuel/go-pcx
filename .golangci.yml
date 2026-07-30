@@ -1,0 +1,29 @@
+# golangci-lint configuration. The linter set is listed explicitly rather than left
+# to `default: standard`, so that a golangci-lint release which enables a new linter
+# by default cannot turn a green CI red without a change here.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    # The standard set golangci-lint enables by default.
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - errorlint
+    - misspell
+    - nolintlint
+    - unconvert
+    - usestdlibvars
+  settings:
+    nolintlint:
+      # A //nolint directive has to name the linter it silences and say why.
+      require-explanation: true
+      require-specific: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
